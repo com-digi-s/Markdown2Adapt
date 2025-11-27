@@ -1,6 +1,10 @@
 # Article title
 
+*Here* is a markdown body of an article.
+
 ## Block title
+
+And *here* is the body of the block.
 
 ### Component text title
 
@@ -14,14 +18,21 @@ So
 
 For more information about Markdown have a look [here](https://www.markdownguide.org/).
 
+### Component slider title - key words for slider needed
+
+scale: 1..10
+labelStart: "1 = wenig"
+labelEnd: "10 = klar"
+
 ### Component mcq title - How many answers are right?
 
 * [x] 1
 * [ ] 2
 * [ ] 3
 
-### Component slider title - key words for slider needed
+### Component mcq title - How many answers are right? (with feeedback keyword)
 
-scale: 1..10
-labelStart: "1 = wenig"
-labelEnd: "10 = klar"
+* [x] 1
+* [ ] 2
+* [ ] 3
+Feedback: Only one answer is right.

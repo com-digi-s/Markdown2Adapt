@@ -298,12 +298,13 @@ def article_template(_id: str, parent_id: str, title: str, body: str, assessment
         }
     }
 
-def block_template(_id: str, parent_id: str, track_id: int, title: str) -> Dict[str, Any]:
+def block_template(_id: str, parent_id: str, track_id: int, title: str, body: str) -> Dict[str, Any]:
     return {
         "_id": _id,
         "_parentId": parent_id,
         "_type": "block",
         "title": title,
+        "body": md_to_html(body),
         "displayTitle": title,
         "_trackingId": track_id,
         "_pageLevelProgress": {"_isEnabled": False}
@@ -588,24 +589,16 @@ def _get_all_h2_sections(sections: List[Section], total_lines: int) -> List[Sect
         result.append(Section(level=2, title=s.title, start=s.start, end=end))
     return result
 
-def get_article_body(md: str, section: Section, sections: List[Section]):
-    """
-    Get body for Section 'section' (level=3) in md,
-    from the heading line (section.start) + 1 until the next heading, or end of doc.
-    Skips the heading line.
-    """
-    all_lines = md.splitlines()
+def get_section_body(md: str, section: Section, sections: list[Section]) -> str:
+    lines = md.splitlines()
     start = section.start + 1
-    # Find the next heading _after_ this section (by line index, not by heading level)
-    next_heading_idx = None
-    for s in sections:
-        if s.start > section.start:
-            next_heading_idx = s.start
-            break
-    end = next_heading_idx if next_heading_idx is not None else len(all_lines)
-    # Build the body
-    lines = all_lines[start:end]
-    return "\n".join(lines).strip()
+    # Find the next heading at same or higher level
+    nexts = [s for s in sections if s.start > section.start and s.level != section.level]
+    if nexts:
+        end = nexts[0].start
+    else:
+        end = len(lines)
+    return "\n".join(lines[start:end]).strip()
 
 # -------- Builder orchestrator --------
 def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], Dict]:
@@ -670,13 +663,13 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
             a_heads = [s for s in sections if s.level == 3 and p_sec.start <= s.start < p_sec.end]
             if not a_heads:
                 a_heads = [Section(level=3, title=p_sec.title, start=p_sec.start, end=p_sec.end)]
-        print(a_heads)
+
         for a_sec in a_heads:
             article_id = ids.new()
             assesment_id=ids.new()
             # new body
-            article_body = get_article_body(md, a_sec, sections)
-            articles.append(article_template(article_id, page_id, a_sec.title, body=article_body, assessment_id=assesment_id))
+            article_text_body = get_section_body(md, a_sec, sections)
+            articles.append(article_template(article_id, page_id, a_sec.title, body=article_text_body, assessment_id=assesment_id))
 
             # Blocks
             if has_block_h2:
@@ -709,7 +702,8 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
             for b_sec, chunk in zip(b_heads, b_chunks):
                 block_id = ids.new()
                 b_marker, b_title = split_marker(b_sec.title)
-                blocks.append(block_template(block_id, article_id, tracking, b_title))
+                block_text_body = get_section_body(md, b_sec, sections)
+                blocks.append(block_template(block_id, article_id, tracking, b_title, body=block_text_body))
                 tracking += 1
 
                 if has_block_h2:

@@ -47,6 +47,18 @@ python md2adapt.py --out ./output /path/to/your/markdown-template.md
 
 ## Current Mapping
 
-The given [Markdown sample](./sample.md) will look like this in Adapt:
+The given [Markdown sample](./resources/sample.md) will look like this in Adapt:
+![alt text](sample.png)
 
-![alt text](image.png)
+### mcq can be given with feedback
+
+```Markdown
+### Component mcq title - How many answers are right? (with feeedback keyword)
+
+* [x] 1
+* [ ] 2
+* [ ] 3
+Feedback: Only one answer is right.
+```
+![alt text](resources/img/feedback1.png)
+![alt text](resources/img/feedback2.png)

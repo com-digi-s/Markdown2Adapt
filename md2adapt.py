@@ -13,18 +13,26 @@
 # - Articles: prefer H3 per page; if none, one synthetic article per page.
 #   In the "[block] at H2" case, we create one synthetic article for the page.
 # - Blocks: prefer H4 within an article; otherwise split on ---/*** or one block.
-#   In the "[block] at H2" case, those H2s ARE the blocks.
+#   In the "[block] at H2" case, those H2s ARE the blocks. If no explicit
+#   "[block]" tags exist but H3s look like components (MCQ/slider), then
+#   every H2 is treated as a block (auto-component mode).
 # - Components:
 #   • Default: 1 TEXT component per block (safe fallback).
-#   • In "[block] at H2": each H3 inside a block becomes a component:
+#   • In "[block] at H2" or auto-component mode: each H3 inside a block becomes a component:
 #       [text] -> text component
 #       [mcq]  -> mcq component (options parsed from list items with [ ] / [x])
 #       [slider] -> slider component (parsed from "scale: a..b", "labelStart:", "labelEnd:")
+#     If no explicit marker is present, we auto-detect:
+#       - MCQ if the body contains lines like "- [ ] ..." or "[x] ..."
+#       - Slider if the body contains "scale: a..b" and/or "labelStart/labelEnd"
 #     Unrecognized markers fall back to TEXT.
 #
-# Optional simple front-matter (before a dashed line "--------------"):
-#   pageTitle: "..."
-#   articleTitle: "..."
+# Optional simple front-matter (before the first Markdown heading):
+#   parentMenuTitle: "Anwenden"
+#   language: "de"
+#   version: "1.4"
+#   pageTitle: "..."        # used in synthetic single-page mode
+#   articleTitle: "..."     # used in synthetic single-article mode
 #
 # Output files:
 #   contentObjects.json, articles.json, blocks.json, components.json, course.json
@@ -312,17 +320,30 @@ def parse_slider_chunk(md: str) -> Tuple[int, int, str, str]:
                 label_end = val
     return min_v, max_v, label_start, label_end
 
+def _looks_like_mcq(md: str) -> bool:
+    for ln in md.strip().splitlines():
+        for rx in MCQ_OPT_RES:
+            if rx.match(ln.rstrip()):
+                return True
+    return False
+
+def _looks_like_slider(md: str) -> bool:
+    for ln in md.strip().splitlines():
+        if SL_SCALE_RE.match(ln) or SL_LABEL_RE.match(ln):
+            return True
+    return False
+
 # -------- Tiny front-matter (optional) --------
 def _extract_meta_titles(md: str) -> dict:
     """
-    Very small 'front-matter' parser for lines like:
-      pageTitle: "..."
-      articleTitle: "..."
-    before the first dashed separator line (---...).
+    Minimal front-matter parser:
+      - Reads KEY: "VALUE" lines that appear *before the first Markdown heading*.
+      - Ignores any dashed separators (--- or --------------).
+      - Recognizes arbitrary keys (e.g., pageTitle, articleTitle, parentMenuTitle, language, version).
     """
     meta = {}
     for line in md.splitlines():
-        if re.match(r"^\s*-{3,}\s*$", line):
+        if HEADING_RE.match(line):
             break
         m = re.match(r'^\s*([A-Za-z][\w-]*):\s*"(.*)"\s*$', line.strip())
         if m:
@@ -348,6 +369,15 @@ def find_h2_block_sections(sections: List[Section], total_lines: int) -> List[Se
                 result.append(Section(level=2, title=s.title, start=s.start, end=end))
     return result
 
+def _get_all_h2_sections(sections: List[Section], total_lines: int) -> List[Section]:
+    """Return all H2 sections with correct [start, end) boundaries."""
+    result: List[Section] = []
+    h2s = [s for s in sections if s.level == 2]
+    for i, s in enumerate(h2s):
+        end = h2s[i+1].start if i+1 < len(h2s) else total_lines
+        result.append(Section(level=2, title=s.title, start=s.start, end=end))
+    return result
+
 # -------- Builder orchestrator --------
 def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], Dict]:
     ids = IdSpace()
@@ -363,8 +393,16 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
     menu_id = ids.new()
     menu = menu_template(menu_id, menu_title or "Menu")
 
-    # Detect "[block]" at H2 to avoid treating blocks as pages
-    has_block_h2 = any(s.level == 2 and split_marker(s.title)[0] == "block" for s in sections)
+    # Detect explicit "[block]" tags at H2 AND/OR auto-component mode (MCQ/slider heuristics in H3s).
+    h2_has_block_tags = any(s.level == 2 and split_marker(s.title)[0] == "block" for s in sections)
+    any_component_h3 = False
+    for s in sections:
+        if s.level == 3:
+            chunk = slice_text(md, s.start, s.end)
+            if _looks_like_mcq(chunk) or _looks_like_slider(chunk):
+                any_component_h3 = True
+                break
+    has_block_h2 = h2_has_block_tags or any_component_h3
 
     # Pages
     if has_block_h2:
@@ -410,8 +448,8 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
 
             # Blocks
             if has_block_h2:
-                # Use corrected H2-block ranges (end at next H2)
-                b_heads = find_h2_block_sections(sections, total_lines)
+                # If explicit [block] tags exist, use them; otherwise, use *all* H2s as blocks.
+                b_heads = find_h2_block_sections(sections, total_lines) if h2_has_block_tags else _get_all_h2_sections(sections, total_lines)
                 b_chunks = [slice_text(md, s.start, s.end) for s in b_heads]
             else:
                 # H4 blocks inside article; otherwise fall back to rules/single block
@@ -451,14 +489,15 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
                             marker, c_title = split_marker(sub.title)
                             sub_chunk = slice_text(md, sub.start, sub.end)
 
-                            if marker == "mcq":
+                            # Decide component type by marker OR heuristics
+                            if marker == "mcq" or _looks_like_mcq(sub_chunk):
                                 instr_html, items = parse_mcq_chunk(sub_chunk)
                                 if items:
                                     components.append(mcq_component(comp_id, block_id, c_title or "MCQ", instr_html, items))
                                 else:
                                     # fallback to text if no options found
                                     components.append(text_component(comp_id, block_id, c_title or "MCQ", md_to_html(sub_chunk)))
-                            elif marker == "slider":
+                            elif marker == "slider" or _looks_like_slider(sub_chunk):
                                 min_v, max_v, lstart, lend = parse_slider_chunk(sub_chunk)
                                 components.append(slider_component(comp_id, block_id, c_title or "Slider", min_v, max_v, lstart, lend))
                             else:
@@ -522,7 +561,12 @@ def main(argv=None):
         sys.exit(2)
 
     md = md_path.read_text(encoding="utf-8")
-    content_objects, articles, blocks, components, course = build_from_markdown(md, args.lang, args.menu)
+    meta = _extract_meta_titles(md)
+    # Prefer front-matter if present; CLI flags remain valid fallbacks.
+    eff_lang = meta.get("language", args.lang)
+    eff_menu = meta.get("parentMenuTitle", args.menu)
+
+    content_objects, articles, blocks, components, course = build_from_markdown(md, eff_lang, eff_menu)
 
     # validate then write
     validate_graph(content_objects, articles, blocks, components)

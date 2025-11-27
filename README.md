@@ -44,3 +44,9 @@ To preview the generated JSON files, simply run the script and specify any outpu
 ```bash
 python md2adapt.py --out ./output /path/to/your/markdown-template.md
 ```
+
+## Current Mapping
+
+The given [Markdown sample](./sample.md) will look like this in Adapt:
+
+![alt text](image.png)

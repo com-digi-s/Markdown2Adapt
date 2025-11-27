@@ -228,7 +228,12 @@ def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: in
     d = component_common(_id, parent_id, "slider", title)
     d["body"] = ""
     # store settings in a predictable bucket; adjust to your plugin schema if needed
-    d["_scale"] = {"min": int(min_v), "max": int(max_v), "labelStart": label_start, "labelEnd": label_end}
+    d["_scaleStart"] = int(min_v)
+    d["_scaleEnd"] =  int(max_v)
+    d["_scaleStep"] =  1
+    d["labelStart"] = label_start
+    d["labelEnd"] =  label_end
+    d["_correctRange"] = {"_bottom": int(min_v), "_top": int(max_v)}
     return d
 
 # -------- Parsers for MCQ & Slider chunks --------

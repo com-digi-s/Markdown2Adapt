@@ -1,4 +1,3 @@
-# %%
 # md2adapt.py — Generate Adapt Framework JSON (contentObjects, articles, blocks, components, course)
 #
 # Usage:
@@ -10,13 +9,22 @@
 # - H1 (#) first occurrence -> course title (fallback to file stem)
 # - Pages:
 #     Prefer H2 (##). If none exist, treat subsequent H1 as pages. If still none, create one page.
+#     SPECIAL CASE: If H2s use a "[block]" marker (e.g., "## [block] Title"), they are treated as BLOCKS
+#     under a single synthetic page and article (so they don't get parsed as pages/menus).
 # - Articles:
 #     Prefer H3 within each page. If none, create a single article per page.
+#     In the "[block] at H2" special case, one synthetic article is created unless front-matter overrides it.
 # - Blocks:
 #     Prefer H4 within each article. If none, split body by horizontal rules (---/***) or create one block.
+#     In the "[block] at H2" special case, those H2s are the blocks.
 # - Components:
 #     For now, everything within a block is emitted as a single TEXT component (safe default).
+#     In the "[block] at H2" special case, H3s inside each H2-block become individual TEXT components.
 #     You can opt-in to other components by inline markers in Markdown (optional, see README in docstring).
+#
+# Optional simple front-matter (before a dashed line "--------------"):
+#   pageTitle: "..."
+#   articleTitle: "..."
 #
 # The script writes five files to the output folder:
 #   contentObjects.json, articles.json, blocks.json, components.json, course.json
@@ -34,6 +42,17 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Iterable
 
 HEX24_RE = re.compile(r"^[0-9a-f]{24}$")
+MARKER_RE = re.compile(r"^\[(\w+)\]\s*(.*)$")
+
+def split_marker(title: str):
+    """
+    If title starts with [something] return (marker_lower, rest).
+    Otherwise return (None, title).
+    """
+    m = MARKER_RE.match(title.strip())
+    if m:
+        return m.group(1).lower(), m.group(2).strip()
+    return None, title
 
 def gen_hex24(n: int) -> str:
     """Deterministic-ish 24-hex generator from an incrementing integer."""
@@ -133,6 +152,7 @@ def menu_template(_id: str, title: str) -> Dict[str, Any]:
     return {
         "_type": "menu",
         "_id": _id,
+        "_parentId": "course",
         "title": title,
         "displayTitle": title
     }
@@ -150,6 +170,7 @@ def article_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
     return {
         "_id": _id,
         "_parentId": parent_id,
+        "_type": "article",
         "title": title,
         "displayTitle": "",
         "_articleBlockSlider": {"_isEnabled": False, "_hasTabs": False},
@@ -160,6 +181,7 @@ def block_template(_id: str, parent_id: str, track_id: int, title: str) -> Dict[
     return {
         "_id": _id,
         "_parentId": parent_id,
+        "_type": "block",
         "title": title,
         "displayTitle": title,
         "_trackingId": track_id,
@@ -188,8 +210,22 @@ def text_component(_id: str, parent_id: str, title: str, html_body: str) -> Dict
     d["body"] = html_body
     return d
 
-# Optional: extend to more components by markers later.
-# For now we keep it safe and simple.
+# -------- Tiny front-matter (optional) --------
+def _extract_meta_titles(md: str) -> dict:
+    """
+    Very small 'front-matter' parser for lines like:
+      pageTitle: "..."
+      articleTitle: "..."
+    before the first dashed separator line (---...).
+    """
+    meta = {}
+    for line in md.splitlines():
+        if re.match(r"^\s*-{3,}\s*$", line):
+            break
+        m = re.match(r'^\s*([A-Za-z][\w-]*):\s*"(.*)"\s*$', line.strip())
+        if m:
+            meta[m.group(1)] = m.group(2)
+    return meta
 
 # -------- Builder orchestrator --------
 def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], Dict]:
@@ -204,14 +240,23 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
     menu_id = ids.new()
     menu = menu_template(menu_id, menu_title or "Menu")
 
+    # Detect "[block]" at H2 to avoid treating blocks as pages
+    has_block_h2 = any(s.level == 2 and split_marker(s.title)[0] == "block" for s in sections)
+
     # Pages
-    pages_heads = [s for s in sections if s.level == 2]
-    if not pages_heads:
-        # fallback: use H1 beyond the first as pages
-        pages_heads = h1s[1:]
-    if not pages_heads:
-        # final fallback: create a synthetic page spanning the whole doc
-        pages_heads = [Section(level=2, title=course_title, start=0, end=len(md.splitlines()))]
+    if has_block_h2:
+        # single synthetic page so H2 [block] become blocks, not pages
+        meta = _extract_meta_titles(md)
+        synthetic_page_title = meta.get("pageTitle", course_title)
+        pages_heads = [Section(level=2, title=synthetic_page_title, start=0, end=len(md.splitlines()))]
+    else:
+        pages_heads = [s for s in sections if s.level == 2]
+        if not pages_heads:
+            # fallback: use H1 beyond the first as pages
+            pages_heads = h1s[1:]
+        if not pages_heads:
+            # final fallback: create a synthetic page spanning the whole doc
+            pages_heads = [Section(level=2, title=course_title, start=0, end=len(md.splitlines()))]
 
     pages: List[Dict] = []
     articles: List[Dict] = []
@@ -224,49 +269,80 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
         page_id = ids.new()
         pages.append(page_template(page_id, menu_id, p_sec.title))
 
-        # articles in page: H3 inside this page range
-        a_heads = [s for s in sections if s.level == 3 and p_sec.start <= s.start < p_sec.end]
-        if not a_heads:
-            # single article for the page, bounded by page section
-            a_heads = [Section(level=3, title=p_sec.title, start=p_sec.start, end=p_sec.end)]
+        # Articles
+        if has_block_h2:
+            # One synthetic article; prefer front-matter title
+            meta = _extract_meta_titles(md)
+            article_title = meta.get("articleTitle", p_sec.title)
+            a_heads = [Section(level=3, title=article_title, start=p_sec.start, end=p_sec.end)]
+        else:
+            # H3 inside this page range
+            a_heads = [s for s in sections if s.level == 3 and p_sec.start <= s.start < s.end if s.end is not None]  # safety
+            # Fix comprehension to use correct end boundary:
+            a_heads = [s for s in sections if s.level == 3 and p_sec.start <= s.start < p_sec.end]
+            if not a_heads:
+                a_heads = [Section(level=3, title=p_sec.title, start=p_sec.start, end=p_sec.end)]
 
         for a_sec in a_heads:
             article_id = ids.new()
             articles.append(article_template(article_id, page_id, a_sec.title))
 
-            # blocks in article: H4 inside article range; otherwise split by rules
-            b_heads = [s for s in sections if s.level == 4 and a_sec.start <= s.start < a_sec.end]
-            if not b_heads:
-                # Split on horizontal rules (--- or ***) within article body
-                article_body = slice_text(md, a_sec.start, a_sec.end)
-                chunks = re.split(r"(?m)^\s*(?:-{3,}|\*{3,})\s*$", article_body)
-                if len(chunks) <= 1:
-                    b_heads = [Section(level=4, title=a_sec.title, start=a_sec.start, end=a_sec.end)]
-                    b_chunks = [slice_text(md, a_sec.start, a_sec.end)]
-                else:
-                    b_heads = []
-                    b_chunks = []
-                    cursor = 0
-                    for i, chunk in enumerate(chunks, 1):
-                        # synth heading-like wrapper indices within article
-                        # approximate start index by counting lines back from a_sec.start
-                        b_heads.append(Section(level=4, title=f"{a_sec.title} – Abschnitt {i}", start=a_sec.start+cursor, end=None))
-                        b_chunks.append(chunk.strip())
-                        cursor += len(chunk.splitlines()) + 1
-            else:
-                # collect chunks per H4
+            # Blocks
+            if has_block_h2:
+                # Treat H2 [block] as blocks inside the synthetic article
+                b_heads = [s for s in sections if s.level == 2 and split_marker(s.title)[0] == "block"]
                 b_chunks = [slice_text(md, s.start, s.end) for s in b_heads]
+            else:
+                # H4 blocks inside article; otherwise fall back to rules/single block
+                b_heads = [s for s in sections if s.level == 4 and a_sec.start <= s.start < a_sec.end]
+                if not b_heads:
+                    # Split on horizontal rules (--- or ***) within article body
+                    article_body = slice_text(md, a_sec.start, a_sec.end)
+                    chunks = re.split(r"(?m)^\s*(?:-{3,}|\*{3,})\s*$", article_body)
+                    if len(chunks) <= 1:
+                        b_heads = [Section(level=4, title=a_sec.title, start=a_sec.start, end=a_sec.end)]
+                        b_chunks = [slice_text(md, a_sec.start, a_sec.end)]
+                    else:
+                        b_heads = []
+                        b_chunks = []
+                        cursor = 0
+                        for i, chunk in enumerate(chunks, 1):
+                            # approximate start index by counting lines back from a_sec.start
+                            b_heads.append(Section(level=4, title=f"{a_sec.title} – Section {i}", start=a_sec.start + cursor, end=None))
+                            b_chunks.append(chunk.strip())
+                            cursor += len(chunk.splitlines()) + 1
+                else:
+                    # collect chunks per H4
+                    b_chunks = [slice_text(md, s.start, s.end) for s in b_heads]
 
             for b_sec, chunk in zip(b_heads, b_chunks):
                 block_id = ids.new()
-                blocks.append(block_template(block_id, article_id, tracking, b_sec.title))
+                b_marker, b_title = split_marker(b_sec.title)
+                blocks.append(block_template(block_id, article_id, tracking, b_title))
                 tracking += 1
 
-                # Single TEXT component per block from chunk
-                html = md_to_html(chunk) if chunk.strip() else "<p></p>"
-                comp_id = ids.new()
-                comp_title = b_sec.title
-                components.append(text_component(comp_id, block_id, comp_title, html))
+                if has_block_h2:
+                    # Components = H3 inside this H2 block (fallback to single component)
+                    sub_heads = [s for s in sections if s.level == 3 and b_sec.start <= s.start < (b_sec.end if b_sec.end is not None else len(md.splitlines()))]
+                    if sub_heads:
+                        for sub in sub_heads:
+                            comp_id = ids.new()
+                            c_marker, c_title = split_marker(sub.title)
+                            sub_chunk = slice_text(md, sub.start, sub.end)
+                            html = md_to_html(sub_chunk) if sub_chunk.strip() else "<p></p>"
+                            # For now everything -> TEXT component (safe default), marker only affects title
+                            components.append(text_component(comp_id, block_id, c_title, html))
+                    else:
+                        # Fallback: single component from entire block chunk
+                        html = md_to_html(chunk) if chunk.strip() else "<p></p>"
+                        comp_id = ids.new()
+                        components.append(text_component(comp_id, block_id, b_title, html))
+                else:
+                    # Original behavior: single TEXT component per block
+                    html = md_to_html(chunk) if chunk.strip() else "<p></p>"
+                    comp_id = ids.new()
+                    comp_title = b_title
+                    components.append(text_component(comp_id, block_id, comp_title, html))
 
     # contentObjects array = [menu] + pages
     content_objects = [menu] + pages
@@ -282,7 +358,12 @@ def validate_graph(content_objects, articles, blocks, components) -> None:
 
     # parent existence
     missing: List[str] = []
-    for arr, label in [(articles, "article"), (blocks, "block"), (components, "component"), ( [o for o in content_objects if o.get('_type')=='page'], "page")]:
+    for arr, label in [
+        (articles, "article"),
+        (blocks, "block"),
+        (components, "component"),
+        ([o for o in content_objects if o.get('_type') == 'page'], "page")
+    ]:
         for obj in arr:
             pid = obj.get("_parentId")
             if pid and pid not in ids:

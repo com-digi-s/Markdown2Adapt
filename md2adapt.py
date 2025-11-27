@@ -18,30 +18,28 @@
 #     Prefer H4 within each article. If none, split body by horizontal rules (---/***) or create one block.
 #     In the "[block] at H2" special case, those H2s are the blocks.
 # - Components:
-#     For now, everything within a block is emitted as a single TEXT component (safe default).
+#     For now, everything within a block is emitted as TEXT (safe default).
 #     In the "[block] at H2" special case, H3s inside each H2-block become individual TEXT components.
-#     You can opt-in to other components by inline markers in Markdown (optional, see README in docstring).
 #
 # Optional simple front-matter (before a dashed line "--------------"):
 #   pageTitle: "..."
 #   articleTitle: "..."
 #
-# The script writes five files to the output folder:
+# Output files:
 #   contentObjects.json, articles.json, blocks.json, components.json, course.json
 #
-# Strong guarantees:
+# Guarantees:
 # - 24-char hex IDs for all objects except course (_id = "course")
 # - Valid parent chains: menu → page → article → block → component
 # - Monotonic unique _trackingId for blocks
 #
-# If something looks off, the validator will print explicit Orphaned/Missing IDs before writing.
-#
-import argparse, json, os, re, sys, textwrap
+import argparse, json, re, sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Iterable
+from typing import List, Dict, Any, Tuple
 
 HEX24_RE = re.compile(r"^[0-9a-f]{24}$")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 MARKER_RE = re.compile(r"^\[(\w+)\]\s*(.*)$")
 
 def split_marker(title: str):
@@ -56,8 +54,6 @@ def split_marker(title: str):
 
 def gen_hex24(n: int) -> str:
     """Deterministic-ish 24-hex generator from an incrementing integer."""
-    # 24 hex == 96 bits; use n encoded in hex and left-pad with random-ish but stable salt
-    # For simplicity: zero-pad left to length 24.
     h = format(n, "x")[-24:]
     return h.rjust(24, "0")
 
@@ -80,7 +76,7 @@ def md_to_html(md: str) -> str:
         if not line.strip():
             i += 1
             continue
-        # list
+        # unordered list
         if re.match(r"^\s*[-*+]\s+", line):
             items = []
             while i < len(lines) and re.match(r"^\s*[-*+]\s+", lines[i]):
@@ -100,20 +96,18 @@ def md_to_html(md: str) -> str:
 
 def inline_md(text: str) -> str:
     # very small inline markdown: **bold**, *italic*, [text](url)
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
-    text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\\1</strong>", text)
+    text = re.sub(r"\*(.+?)\*", r"<em>\\1</em>", text)
+    text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\\2">\\1</a>', text)
     return text
 
 # -------- Parse sections --------
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
-
 @dataclass
 class Section:
     level: int
     title: str
     start: int
-    end: int = None
+    end: int = None  # default filled later
 
 def parse_headings(md: str) -> List[Section]:
     lines = md.splitlines()
@@ -124,7 +118,7 @@ def parse_headings(md: str) -> List[Section]:
             level = len(m.group(1))
             title = m.group(2).strip()
             sections.append(Section(level, title, idx))
-    # close ranges
+    # naive close ranges: next heading of ANY level
     for i, s in enumerate(sections):
         s.end = sections[i+1].start if i+1 < len(sections) else len(lines)
     return sections
@@ -227,10 +221,33 @@ def _extract_meta_titles(md: str) -> dict:
             meta[m.group(1)] = m.group(2)
     return meta
 
+# -------- Helpers for the H2-[block] special case --------
+def find_h2_block_sections(sections: List[Section], total_lines: int) -> List[Section]:
+    """
+    Return H2 sections whose titles begin with [block], with end set to the next H2 (or EOF).
+    This ensures H3s within a block are inside the block's [start, end) range.
+    """
+    result: List[Section] = []
+    for i, s in enumerate(sections):
+        if s.level == 2:
+            marker, _ = split_marker(s.title)
+            if marker == "block":
+                # find next H2
+                end = total_lines
+                for j in range(i + 1, len(sections)):
+                    if sections[j].level == 2:
+                        end = sections[j].start
+                        break
+                # create a corrected Section (preserve original title)
+                result.append(Section(level=2, title=s.title, start=s.start, end=end))
+    return result
+
 # -------- Builder orchestrator --------
 def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], Dict]:
     ids = IdSpace()
     sections = parse_headings(md)
+    total_lines = len(md.splitlines())
+
     # Course title
     h1s = [s for s in sections if s.level == 1]
     course_title = h1s[0].title if h1s else "Course"
@@ -248,7 +265,7 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
         # single synthetic page so H2 [block] become blocks, not pages
         meta = _extract_meta_titles(md)
         synthetic_page_title = meta.get("pageTitle", course_title)
-        pages_heads = [Section(level=2, title=synthetic_page_title, start=0, end=len(md.splitlines()))]
+        pages_heads = [Section(level=2, title=synthetic_page_title, start=0, end=total_lines)]
     else:
         pages_heads = [s for s in sections if s.level == 2]
         if not pages_heads:
@@ -256,7 +273,7 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
             pages_heads = h1s[1:]
         if not pages_heads:
             # final fallback: create a synthetic page spanning the whole doc
-            pages_heads = [Section(level=2, title=course_title, start=0, end=len(md.splitlines()))]
+            pages_heads = [Section(level=2, title=course_title, start=0, end=total_lines)]
 
     pages: List[Dict] = []
     articles: List[Dict] = []
@@ -265,7 +282,7 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
 
     tracking = 1
 
-    for p_idx, p_sec in enumerate(pages_heads, 1):
+    for p_sec in pages_heads:
         page_id = ids.new()
         pages.append(page_template(page_id, menu_id, p_sec.title))
 
@@ -277,8 +294,6 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
             a_heads = [Section(level=3, title=article_title, start=p_sec.start, end=p_sec.end)]
         else:
             # H3 inside this page range
-            a_heads = [s for s in sections if s.level == 3 and p_sec.start <= s.start < s.end if s.end is not None]  # safety
-            # Fix comprehension to use correct end boundary:
             a_heads = [s for s in sections if s.level == 3 and p_sec.start <= s.start < p_sec.end]
             if not a_heads:
                 a_heads = [Section(level=3, title=p_sec.title, start=p_sec.start, end=p_sec.end)]
@@ -289,8 +304,8 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
 
             # Blocks
             if has_block_h2:
-                # Treat H2 [block] as blocks inside the synthetic article
-                b_heads = [s for s in sections if s.level == 2 and split_marker(s.title)[0] == "block"]
+                # Use corrected H2-block ranges (end at next H2)
+                b_heads = find_h2_block_sections(sections, total_lines)
                 b_chunks = [slice_text(md, s.start, s.end) for s in b_heads]
             else:
                 # H4 blocks inside article; otherwise fall back to rules/single block
@@ -307,7 +322,6 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
                         b_chunks = []
                         cursor = 0
                         for i, chunk in enumerate(chunks, 1):
-                            # approximate start index by counting lines back from a_sec.start
                             b_heads.append(Section(level=4, title=f"{a_sec.title} – Section {i}", start=a_sec.start + cursor, end=None))
                             b_chunks.append(chunk.strip())
                             cursor += len(chunk.splitlines()) + 1
@@ -322,15 +336,14 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
                 tracking += 1
 
                 if has_block_h2:
-                    # Components = H3 inside this H2 block (fallback to single component)
-                    sub_heads = [s for s in sections if s.level == 3 and b_sec.start <= s.start < (b_sec.end if b_sec.end is not None else len(md.splitlines()))]
+                    # Components = H3 inside this H2 block (bounded by corrected end)
+                    sub_heads = [s for s in sections if s.level == 3 and b_sec.start <= s.start < b_sec.end]
                     if sub_heads:
                         for sub in sub_heads:
                             comp_id = ids.new()
-                            c_marker, c_title = split_marker(sub.title)
+                            _, c_title = split_marker(sub.title)
                             sub_chunk = slice_text(md, sub.start, sub.end)
                             html = md_to_html(sub_chunk) if sub_chunk.strip() else "<p></p>"
-                            # For now everything -> TEXT component (safe default), marker only affects title
                             components.append(text_component(comp_id, block_id, c_title, html))
                     else:
                         # Fallback: single component from entire block chunk
@@ -341,8 +354,7 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
                     # Original behavior: single TEXT component per block
                     html = md_to_html(chunk) if chunk.strip() else "<p></p>"
                     comp_id = ids.new()
-                    comp_title = b_title
-                    components.append(text_component(comp_id, block_id, comp_title, html))
+                    components.append(text_component(comp_id, block_id, b_title, html))
 
     # contentObjects array = [menu] + pages
     content_objects = [menu] + pages
@@ -358,12 +370,7 @@ def validate_graph(content_objects, articles, blocks, components) -> None:
 
     # parent existence
     missing: List[str] = []
-    for arr, label in [
-        (articles, "article"),
-        (blocks, "block"),
-        (components, "component"),
-        ([o for o in content_objects if o.get('_type') == 'page'], "page")
-    ]:
+    for arr in (articles, blocks, components, [o for o in content_objects if o.get('_type') == 'page']):
         for obj in arr:
             pid = obj.get("_parentId")
             if pid and pid not in ids:

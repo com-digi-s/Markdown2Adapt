@@ -5,21 +5,22 @@
 #
 # The script intentionally uses only the Python standard library.
 #
-# It tolerates *arbitrary* Markdown structures:
-# - H1 (#) first occurrence -> course title (fallback to file stem)
-# - Pages:
-#     Prefer H2 (##). If none exist, treat subsequent H1 as pages. If still none, create one page.
-#     SPECIAL CASE: If H2s use a "[block]" marker (e.g., "## [block] Title"), they are treated as BLOCKS
-#     under a single synthetic page and article (so they don't get parsed as pages/menus).
-# - Articles:
-#     Prefer H3 within each page. If none, create a single article per page.
-#     In the "[block] at H2" special case, one synthetic article is created unless front-matter overrides it.
-# - Blocks:
-#     Prefer H4 within each article. If none, split body by horizontal rules (---/***) or create one block.
-#     In the "[block] at H2" special case, those H2s are the blocks.
+# Authoring rules (tolerant defaults):
+# - Course title: first H1 (#) or fallback to "Course".
+# - Pages: prefer H2. If none, subsequent H1s; if none, a synthetic page.
+#   SPECIAL CASE: If H2s start with "[block]" (e.g., "## [block] Intro"),
+#   those H2s are treated as BLOCKS under one synthetic page+article.
+# - Articles: prefer H3 per page; if none, one synthetic article per page.
+#   In the "[block] at H2" case, we create one synthetic article for the page.
+# - Blocks: prefer H4 within an article; otherwise split on ---/*** or one block.
+#   In the "[block] at H2" case, those H2s ARE the blocks.
 # - Components:
-#     For now, everything within a block is emitted as TEXT (safe default).
-#     In the "[block] at H2" special case, H3s inside each H2-block become individual TEXT components.
+#   • Default: 1 TEXT component per block (safe fallback).
+#   • In "[block] at H2": each H3 inside a block becomes a component:
+#       [text] -> text component
+#       [mcq]  -> mcq component (options parsed from list items with [ ] / [x])
+#       [slider] -> slider component (parsed from "scale: a..b", "labelStart:", "labelEnd:")
+#     Unrecognized markers fall back to TEXT.
 #
 # Optional simple front-matter (before a dashed line "--------------"):
 #   pageTitle: "..."
@@ -36,21 +37,21 @@
 import argparse, json, re, sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 HEX24_RE = re.compile(r"^[0-9a-f]{24}$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
-MARKER_RE = re.compile(r"^\[(\w+)\]\s*(.*)$")
+MARKER_RE = re.compile(r"^\[(\w+)\]\s*(.*)$", re.IGNORECASE)
 
 def split_marker(title: str):
     """
-    If title starts with [something] return (marker_lower, rest).
+    If title starts with [something] return (marker_lower, rest_title).
     Otherwise return (None, title).
     """
     m = MARKER_RE.match(title.strip())
     if m:
         return m.group(1).lower(), m.group(2).strip()
-    return None, title
+    return None, title.strip()
 
 def gen_hex24(n: int) -> str:
     """Deterministic-ish 24-hex generator from an incrementing integer."""
@@ -96,9 +97,9 @@ def md_to_html(md: str) -> str:
 
 def inline_md(text: str) -> str:
     # very small inline markdown: **bold**, *italic*, [text](url)
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\\1</strong>", text)
-    text = re.sub(r"\*(.+?)\*", r"<em>\\1</em>", text)
-    text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\\2">\\1</a>', text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
+    text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', text)
     return text
 
 # -------- Parse sections --------
@@ -107,7 +108,7 @@ class Section:
     level: int
     title: str
     start: int
-    end: int = None  # default filled later
+    end: Optional[int] = None  # filled later
 
 def parse_headings(md: str) -> List[Section]:
     lines = md.splitlines()
@@ -118,12 +119,14 @@ def parse_headings(md: str) -> List[Section]:
             level = len(m.group(1))
             title = m.group(2).strip()
             sections.append(Section(level, title, idx))
-    # naive close ranges: next heading of ANY level
+    # close ranges (temporary: next heading of ANY level)
     for i, s in enumerate(sections):
         s.end = sections[i+1].start if i+1 < len(sections) else len(lines)
     return sections
 
-def slice_text(md: str, start: int, end: int) -> str:
+def slice_text(md: str, start: int, end: Optional[int]) -> str:
+    if end is None:
+        end = len(md.splitlines())
     lines = md.splitlines()[start:end]
     # drop the heading line itself
     if lines and HEADING_RE.match(lines[0]):
@@ -204,6 +207,106 @@ def text_component(_id: str, parent_id: str, title: str, html_body: str) -> Dict
     d["body"] = html_body
     return d
 
+# --- Real components: MCQ & Slider (basic schema; safe defaults) ---
+def mcq_component(_id: str, parent_id: str, title: str, instruction_html: str, items: List[Tuple[str, bool]]) -> Dict[str, Any]:
+    """
+    items: list of (text, is_correct)
+    """
+    d = component_common(_id, parent_id, "mcq", title)
+    d["body"] = ""
+    d["instruction"] = instruction_html
+    d["_items"] = [{"text": t, "_correct": bool(ok)} for (t, ok) in items]
+    # lightweight feedback scaffold; Adapt plugins typically accept these keys
+    d["_feedback"] = {"correct": "", "incorrect": "", "partlyCorrect": ""}
+    d["_questionWeight"] = 1
+    return d
+
+def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: int, label_start: str, label_end: str) -> Dict[str, Any]:
+    """
+    Minimal slider payload compatible with many slider plugins.
+    """
+    d = component_common(_id, parent_id, "slider", title)
+    d["body"] = ""
+    # store settings in a predictable bucket; adjust to your plugin schema if needed
+    d["_scale"] = {"min": int(min_v), "max": int(max_v), "labelStart": label_start, "labelEnd": label_end}
+    return d
+
+# -------- Parsers for MCQ & Slider chunks --------
+MCQ_OPT_RES = [
+    re.compile(r"^\s*[-*+]\s*\[(x|X| )\]\s*(.+)\s*$"),   # "- [x] text"
+    re.compile(r"^\s*\[(x|X| )\]\s*(.+)\s*$"),           # "[x] text"
+]
+INSTR_RES = [
+    re.compile(r"^\s*(?:\*\*)?\s*Instruction\s*:\s*(.*)$", re.IGNORECASE),
+    re.compile(r"^\s*(?:\*\*)?\s*Anweisung\s*:\s*(.*)$", re.IGNORECASE),
+]
+
+def parse_mcq_chunk(md: str) -> Tuple[str, List[Tuple[str, bool]]]:
+    """
+    Returns (instruction_html, items). If no items found, items=[]
+    """
+    lines = [ln.rstrip() for ln in md.strip().splitlines()]
+    instruction_lines: List[str] = []
+    items: List[Tuple[str, bool]] = []
+    saw_option = False
+
+    for ln in lines:
+        matched = False
+        # detect options
+        for rx in MCQ_OPT_RES:
+            m = rx.match(ln)
+            if m:
+                is_x = m.group(1).lower() == "x"
+                text = m.group(2).strip()
+                items.append((text, is_x))
+                saw_option = True
+                matched = True
+                break
+        if matched:
+            continue
+
+        # pick up explicit Instruction: ... lines (first one wins)
+        if not saw_option:
+            for ri in INSTR_RES:
+                mi = ri.match(ln)
+                if mi:
+                    instruction_lines.append(mi.group(1).strip())
+                    matched = True
+                    break
+            if matched:
+                continue
+
+            # Otherwise, before options start: treat as part of instruction paragraph
+            if ln.strip():
+                instruction_lines.append(ln)
+
+    instruction_html = md_to_html("\n".join(instruction_lines)) if instruction_lines else ""
+    return instruction_html, items
+
+SL_SCALE_RE = re.compile(r"^\s*scale\s*:\s*(\d+)\s*\.\.\s*(\d+)\s*$", re.IGNORECASE)
+SL_LABEL_RE = re.compile(r'^\s*(labelStart|labelEnd)\s*:\s*"(.*)"\s*$', re.IGNORECASE)
+
+def parse_slider_chunk(md: str) -> Tuple[int, int, str, str]:
+    """
+    Returns (min, max, labelStart, labelEnd), with sensible defaults.
+    """
+    min_v, max_v = 1, 10
+    label_start, label_end = "1", "10"
+
+    for ln in md.strip().splitlines():
+        m = SL_SCALE_RE.match(ln)
+        if m:
+            min_v, max_v = int(m.group(1)), int(m.group(2))
+            continue
+        m2 = SL_LABEL_RE.match(ln)
+        if m2:
+            key, val = m2.group(1), m2.group(2)
+            if key.lower() == "labelstart":
+                label_start = val
+            elif key.lower() == "labelend":
+                label_end = val
+    return min_v, max_v, label_start, label_end
+
 # -------- Tiny front-matter (optional) --------
 def _extract_meta_titles(md: str) -> dict:
     """
@@ -232,13 +335,11 @@ def find_h2_block_sections(sections: List[Section], total_lines: int) -> List[Se
         if s.level == 2:
             marker, _ = split_marker(s.title)
             if marker == "block":
-                # find next H2
                 end = total_lines
                 for j in range(i + 1, len(sections)):
-                    if sections[j].level == 2:
+                    if sections[j].level == 2:  # next H2 ends this block
                         end = sections[j].start
                         break
-                # create a corrected Section (preserve original title)
                 result.append(Section(level=2, title=s.title, start=s.start, end=end))
     return result
 
@@ -329,6 +430,7 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
                     # collect chunks per H4
                     b_chunks = [slice_text(md, s.start, s.end) for s in b_heads]
 
+            # Emit blocks + components
             for b_sec, chunk in zip(b_heads, b_chunks):
                 block_id = ids.new()
                 b_marker, b_title = split_marker(b_sec.title)
@@ -337,16 +439,29 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
 
                 if has_block_h2:
                     # Components = H3 inside this H2 block (bounded by corrected end)
-                    sub_heads = [s for s in sections if s.level == 3 and b_sec.start <= s.start < b_sec.end]
+                    sub_heads = [s for s in sections if s.level == 3 and b_sec.start <= s.start < (b_sec.end if b_sec.end is not None else total_lines)]
                     if sub_heads:
                         for sub in sub_heads:
                             comp_id = ids.new()
-                            _, c_title = split_marker(sub.title)
+                            marker, c_title = split_marker(sub.title)
                             sub_chunk = slice_text(md, sub.start, sub.end)
-                            html = md_to_html(sub_chunk) if sub_chunk.strip() else "<p></p>"
-                            components.append(text_component(comp_id, block_id, c_title, html))
+
+                            if marker == "mcq":
+                                instr_html, items = parse_mcq_chunk(sub_chunk)
+                                if items:
+                                    components.append(mcq_component(comp_id, block_id, c_title or "MCQ", instr_html, items))
+                                else:
+                                    # fallback to text if no options found
+                                    components.append(text_component(comp_id, block_id, c_title or "MCQ", md_to_html(sub_chunk)))
+                            elif marker == "slider":
+                                min_v, max_v, lstart, lend = parse_slider_chunk(sub_chunk)
+                                components.append(slider_component(comp_id, block_id, c_title or "Slider", min_v, max_v, lstart, lend))
+                            else:
+                                # text or unknown -> TEXT
+                                html = md_to_html(sub_chunk) if sub_chunk.strip() else "<p></p>"
+                                components.append(text_component(comp_id, block_id, c_title or "", html))
                     else:
-                        # Fallback: single component from entire block chunk
+                        # Fallback: single TEXT component from entire block chunk
                         html = md_to_html(chunk) if chunk.strip() else "<p></p>"
                         comp_id = ids.new()
                         components.append(text_component(comp_id, block_id, b_title, html))

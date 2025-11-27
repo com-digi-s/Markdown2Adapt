@@ -43,6 +43,7 @@
 # - Monotonic unique _trackingId for blocks
 #
 import argparse, json, re, sys
+import markdown
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -50,6 +51,14 @@ from typing import List, Dict, Any, Tuple, Optional
 HEX24_RE = re.compile(r"^[0-9a-f]{24}$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 MARKER_RE = re.compile(r"^\[(\w+)\]\s*(.*)$", re.IGNORECASE)
+
+def md_to_html(md_text: str) -> str:
+    """
+    Wandelt einen Markdown-Text in HTML um.
+    :param md_text: Markdown-Quelltext als String
+    :return: HTML-String
+    """
+    return markdown.markdown(md_text)
 
 def split_marker(title: str):
     """
@@ -318,7 +327,7 @@ def component_common(_id: str, parent_id: str, comp: str, title: str) -> Dict[st
 
 def text_component(_id: str, parent_id: str, title: str, html_body: str) -> Dict[str, Any]:
     d = component_common(_id, parent_id, "text", title)
-    d["body"] = html_body
+    d["body"] = md_to_html(html_body)
     return d
 
 def get_mcq_button_object(show_feedback: bool = False):

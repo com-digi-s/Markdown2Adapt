@@ -142,7 +142,14 @@ def slice_text(md: str, start: int, end: Optional[int]) -> str:
     return "\n".join(lines).strip()
 
 # -------- Adapt object builders --------
-def course_template(title: str, lang: str) -> Dict[str, Any]:
+def course_template(
+    title: str,
+    lang: str,
+    total_score: int,
+    total_correct: int,
+    pass_score_ratio: float = 0.6,    # z.B. 60% zum Bestehen
+    is_percentage_based: bool = True  # Setzen Sie False für absolute Werte
+) -> Dict[str, Any]:
     return {
         "_id": "course",
         "_type": "course",
@@ -151,6 +158,13 @@ def course_template(title: str, lang: str) -> Dict[str, Any]:
         "description": "",
         "_defaultLanguage": lang,
         "_defaultDirection": "ltr",
+        "_mcq": {
+            "ariaRegion": "Multiple choice question",
+            "ariaCorrectAnswer": "The correct answer is {{{correctAnswer}}}",
+            "ariaCorrectAnswers": "The correct answers are {{{correctAnswer}}}",
+            "ariaUserAnswer": "The answer you chose was {{{userAnswer}}}",
+            "ariaUserAnswers": "The answers you chose were {{{userAnswer}}}"
+        },
         "_buttons": {
             "_submit": {
             "buttonText": "Antwort abgeben",
@@ -175,6 +189,42 @@ def course_template(title: str, lang: str) -> Dict[str, Any]:
             "remainingAttemptsText": "Verbleibende Versuche",
             "remainingAttemptText": "Letzter Versuch",
             "disabledAriaLabel": "Dieser Button ist derzeit nicht verfügbar."
+        },
+        "_assessment": {
+            "_scoreToPass": int(pass_score_ratio * 100) if is_percentage_based else int(pass_score_ratio * total_score),
+            "_correctToPass": int(pass_score_ratio * 100) if is_percentage_based else int(pass_score_ratio * total_correct),
+            "_isPercentageBased": is_percentage_based
+        },
+        "_requireCompletionOf": -1,
+        "_globals": {
+            "_accessibility": {
+            "skipNavigationText": "Navigation überspringen",
+            "_ariaLabels": {
+                "answeredIncorrectly": "Sie haben falsch geantwortet",
+                "answeredCorrectly": "Sie haben richtig geantwortet",
+                "selectedAnswer": "ausgewählt",
+                "unselectedAnswer": "nicht ausgewählt",
+                "skipNavigation": "Navigation überspringen",
+                "previous": "Zurück",
+                "navigationDrawer": "Öffne Zusatzmaterialien",
+                "close": "Schließen",
+                "closeDrawer": "Drawer schließen",
+                "closeResources": "Zusatzmaterialien schließen",
+                "drawer": "Anfang des Drawers",
+                "closePopup": "Pop-up schließen",
+                "next": "Nächstes Element",
+                "done": "Fertig",
+                "complete": "Abgeschlossen",
+                "incomplete": "Nicht vollständig",
+                "incorrect": "Falsch",
+                "correct": "Richtig",
+                "locked": "Nicht verfügbar",
+                "visited": "Besucht",
+                "required": "Required",
+                "optional": "Optional"
+            },
+            "altFeedbackTitle": "Feedback"
+            }
         }
     }
 
@@ -196,15 +246,46 @@ def page_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
         "displayTitle": title
     }
 
-def article_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
+def article_template(_id: str, parent_id: str, title: str, assessment_id: int) -> Dict[str, Any]:
     return {
         "_id": _id,
         "_parentId": parent_id,
         "_type": "article",
         "title": title,
         "displayTitle": "",
-        "_articleBlockSlider": {"_isEnabled": False, "_hasTabs": False},
-        "_assessment": {"_questions": {"_resetType": "hard"}}
+        "_articleBlockSlider": {
+            "_isEnabled": False,
+            "_hasTabs": False
+        },
+        "_assessment": {
+            "_isEnabled": False,                # Enable or disable this assessment per article
+            "_id": assessment_id,               # Unique name for this assessment
+            "_suppressMarking": False,          # Suppresses question marking until assessment complete or all attempts used
+            "_scoreToPass": 60,                  # Numeric or percent score required to pass
+            "_correctToPass": 60,                # Numeric or percent correctness required to pass
+            "_isPercentageBased": True,         # If true, values above are percent
+            "_includeInTotalScore": False,      # Should score be sent to LMS
+            "_assessmentWeight": 1,             # Proportion of score contributed (1=100%)
+            "_isResetOnRevisit": False,         # Reset automatically on revisit
+            "_attempts": 1,                     # Number of attempts allowed (-1/0/null/None for infinite)
+            "_allowResetIfPassed": False,       # Allow reset after passing (while attempts remain)
+            "_scrollToOnReset": False,          # Scroll to assessment after reset
+            "_banks": {
+                "_isEnabled": False,            # Enable question banks (opposite of _randomisation['_isEnabled'])
+                "_split": "",                   # Example: "2,1"
+                "_randomisation": False         # Randomise within bank?
+            },
+            "_randomisation": {
+                "_isEnabled": False,            # Enable question randomisation (opposite of _banks['_isEnabled'])
+                "_blockCount": 0                # Number of blocks presented when randomising
+            },
+            "_questions": {
+                "_resetType": "soft",           # "soft" or "hard" reset
+                "_canShowFeedback": True,       # Allow feedback display
+                "_canShowMarking": True,        # Allow marking display
+                "_canShowModelAnswer": False    # Allow model answer display
+            }
+        }
     }
 
 def block_template(_id: str, parent_id: str, track_id: int, title: str) -> Dict[str, Any]:
@@ -225,7 +306,7 @@ def component_common(_id: str, parent_id: str, comp: str, title: str) -> Dict[st
         "_id": _id,
         "_parentId": parent_id,
         "title": title,
-        "displayTitle": "",
+        "displayTitle": title,
         "_layout": "full",
         "_classes": "",
         "_isOptional": False,
@@ -240,45 +321,105 @@ def text_component(_id: str, parent_id: str, title: str, html_body: str) -> Dict
     d["body"] = html_body
     return d
 
-def get_button_object():
-    return {
-      "_submit": {
-        "buttonText": "",
-        "ariaLabel": ""
-      },
-      "_reset": {
-        "buttonText": "Zurücksetzen",
-        "ariaLabel": ""
-      },
-      "_showCorrectAnswer": {
-        "buttonText": "",
-        "ariaLabel": ""
-      },
-      "_hideCorrectAnswer": {
-        "buttonText": "",
-        "ariaLabel": ""
-      },
-      "_showFeedback": {
-        "buttonText": "",
-        "ariaLabel": ""
-      },
-      "remainingAttemptsText": "",
-      "remainingAttemptText": ""
+def get_mcq_button_object(show_feedback: bool = False):
+    d = {
+        "_submit": {
+            "buttonText": "",
+            "ariaLabel": ""
+        },
+        "_reset": {
+            "buttonText": "Zurücksetzen",
+            "ariaLabel": ""
+        },
+        "_showCorrectAnswer": {
+            "buttonText": "",
+            "ariaLabel": ""
+        },
+        "_hideCorrectAnswer": {
+            "buttonText": "",
+            "ariaLabel": ""
+        },
+        "remainingAttemptsText": "",
+        "remainingAttemptText": ""
     }
+    if show_feedback:
+        d["_showFeedback"] = {
+            "buttonText": "",
+            "ariaLabel": ""
+        }
+    return d
+
+def get_slider_button_object():
+    d = {
+        "_submit": {
+            "buttonText": "",
+            "ariaLabel": ""
+        }
+    }
+    return d
 
 # --- Real components: MCQ & Slider (basic schema; safe defaults) ---
-def mcq_component(_id: str, parent_id: str, title: str, instruction_html: str, items: List[Tuple[str, bool]]) -> Dict[str, Any]:
+def mcq_component(
+    _id: str,
+    parent_id: str,
+    title: str,
+    instruction_html: str,
+    items: List[Tuple[str, bool]],
+    feedback: Optional[str] = None
+) -> Dict[str, Any]:
     """
     items: list of (text, is_correct)
+    feedback: Optional feedback HTML string for the correct answer.
     """
     d = component_common(_id, parent_id, "mcq", title)
     d["body"] = ""
-    d["instruction"] = title
-    d["_items"] = [{"text": t, "_correct": bool(ok)} for (t, ok) in items]
-    # lightweight feedback scaffold; Adapt plugins typically accept these keys
-    d["_feedback"] = {"correct": "", "incorrect": "", "partlyCorrect": ""}
+    d["instruction"] = "Bitte wähl die richtige Antwort aus!"
+    defaults = {"_isPartlyCorrect": False, "feedback": ""}
+    d["_items"] = [
+        dict(text=t, _shouldBeSelected=ok, **defaults)
+        for t, ok in items
+    ]
+    #d["_items"] = [{"text": t, "_score": ok, "_shouldBeSelected": False, "_isPartlyCorrect": False,"feedback": ""} for (t, ok) in items]
+    d["_attempts"] = 1
+    d["_selectable"] = 1
+    d["_shouldDisplayAttempts"] = True
+    d["_canShowModelAnswer"] = True
+    d["_canShowMarking"] = True
+    d["_shouldDisplayAttempts"] = False
+    d["_isRandom"] = True
+    d["_recordInteraction"] = True
+    d["_hasItemScoring"] = False
     d["_questionWeight"] = 1
-    d["_buttons"] = get_button_object()
+    d["_selectable"] = 1
+    d["_tutor"] = {
+      "_isInherited": True,
+      "_type": "inline",
+      "_classes": "",
+      "_hasNotifyBottomButton": False,
+      "_button": {
+        "text": "{{_globals._extensions._tutor.hideFeedback}}",
+        "ariaLabel": "{{_globals._extensions._tutor.hideFeedback}}"
+      }
+    }
+
+    # Use the provided feedback, or a default if None was supplied
+    if feedback is None:
+        d["_canShowFeedback"] = False
+    else:
+        d["_canShowFeedback"] = True
+        d["_feedback"] = {
+            "title": "Feedback",
+            "correct": "Korrekt! {}".format(feedback),
+            "_incorrect": {
+                "final": "Leider nicht. {}".format(feedback),
+                "notFinal": ""
+            },
+            "_partlyCorrect": {
+                "final": "Zum Teil richtig".format(feedback),
+                "notFinal": ""
+            }
+        }
+    d["_buttons"] = get_mcq_button_object(bool(feedback))
     return d
 
 def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: int, label_start: str, label_end: str) -> Dict[str, Any]:
@@ -293,9 +434,10 @@ def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: in
     d["_scaleStep"] =  1
     d["labelStart"] = label_start
     d["labelEnd"] =  label_end
-    d["instruction"] = title
+    d["instruction"] = "Bitte gib eine Einschätzung ab!"
     d["_correctRange"] = {"_bottom": int(min_v), "_top": int(max_v)}
-    d["_buttons"] = get_button_object()
+    d["_buttons"] = get_slider_button_object()
+    d["_canShowFeedback"] = False
     return d
 
 # -------- Parsers for MCQ & Slider chunks --------
@@ -316,11 +458,15 @@ def parse_mcq_chunk(md: str) -> Tuple[str, List[Tuple[str, bool]]]:
     instruction_lines: List[str] = []
     items: List[Tuple[str, bool]] = []
     saw_option = False
+    feedback = None
 
     for ln in lines:
         matched = False
         # detect options
         for rx in MCQ_OPT_RES:
+            if ln.strip().lower().startswith("feedback:"):
+                feedback = ln[len("Feedback:"):].strip()
+
             m = rx.match(ln)
             if m:
                 is_x = m.group(1).lower() == "x"
@@ -348,7 +494,7 @@ def parse_mcq_chunk(md: str) -> Tuple[str, List[Tuple[str, bool]]]:
                 instruction_lines.append(ln)
 
     instruction_html = md_to_html("\n".join(instruction_lines)) if instruction_lines else ""
-    return instruction_html, items
+    return instruction_html, items, feedback
 
 SL_SCALE_RE = re.compile(r"^\s*scale\s*:\s*(\d+)\s*\.\.\s*(\d+)\s*$", re.IGNORECASE)
 SL_LABEL_RE = re.compile(r'^\s*(labelStart|labelEnd)\s*:\s*"(.*)"\s*$', re.IGNORECASE)
@@ -441,7 +587,7 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
     # Course title
     h1s = [s for s in sections if s.level == 1]
     course_title = h1s[0].title if h1s else "Course"
-    course = course_template(course_title, lang)
+    course = course_template(course_title, lang, 1, 1)
 
     # Menu
     menu_id = ids.new()
@@ -498,7 +644,8 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
 
         for a_sec in a_heads:
             article_id = ids.new()
-            articles.append(article_template(article_id, page_id, a_sec.title))
+            assesment_id=ids.new()
+            articles.append(article_template(article_id, page_id, a_sec.title, assessment_id=assesment_id))
 
             # Blocks
             if has_block_h2:
@@ -545,9 +692,9 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
 
                             # Decide component type by marker OR heuristics
                             if marker == "mcq" or _looks_like_mcq(sub_chunk):
-                                instr_html, items = parse_mcq_chunk(sub_chunk)
+                                instr_html, items, feedback = parse_mcq_chunk(sub_chunk)
                                 if items:
-                                    components.append(mcq_component(comp_id, block_id, c_title or "MCQ", instr_html, items))
+                                    components.append(mcq_component(comp_id, block_id, c_title or "MCQ", instr_html, items, feedback))
                                 else:
                                     # fallback to text if no options found
                                     components.append(text_component(comp_id, block_id, c_title or "MCQ", md_to_html(sub_chunk)))

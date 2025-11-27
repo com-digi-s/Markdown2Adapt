@@ -150,7 +150,32 @@ def course_template(title: str, lang: str) -> Dict[str, Any]:
         "displayTitle": "",
         "description": "",
         "_defaultLanguage": lang,
-        "_defaultDirection": "ltr"
+        "_defaultDirection": "ltr",
+        "_buttons": {
+            "_submit": {
+            "buttonText": "Antwort abgeben",
+            "ariaLabel": "Antwort abgeben"
+            },
+            "_reset": {
+            "buttonText": "Zurücksetzen",
+            "ariaLabel": "Zurücksetzen"
+            },
+            "_showCorrectAnswer": {
+            "buttonText": "Richtige Antwort anzeigen",
+            "ariaLabel": "Richtige Antwort anzeigen"
+            },
+            "_hideCorrectAnswer": {
+            "buttonText": "Meine Antwort anzeigen",
+            "ariaLabel": "Meine Antwort anzeigen"
+            },
+            "_showFeedback": {
+            "buttonText": "Feedback anzeigen",
+            "ariaLabel": "Feedback anzeigen"
+            },
+            "remainingAttemptsText": "Verbleibende Versuche",
+            "remainingAttemptText": "Letzter Versuch",
+            "disabledAriaLabel": "Dieser Button ist derzeit nicht verfügbar."
+        }
     }
 
 def menu_template(_id: str, title: str) -> Dict[str, Any]:
@@ -215,6 +240,32 @@ def text_component(_id: str, parent_id: str, title: str, html_body: str) -> Dict
     d["body"] = html_body
     return d
 
+def get_button_object():
+    return {
+      "_submit": {
+        "buttonText": "",
+        "ariaLabel": ""
+      },
+      "_reset": {
+        "buttonText": "Zurücksetzen",
+        "ariaLabel": ""
+      },
+      "_showCorrectAnswer": {
+        "buttonText": "",
+        "ariaLabel": ""
+      },
+      "_hideCorrectAnswer": {
+        "buttonText": "",
+        "ariaLabel": ""
+      },
+      "_showFeedback": {
+        "buttonText": "",
+        "ariaLabel": ""
+      },
+      "remainingAttemptsText": "",
+      "remainingAttemptText": ""
+    }
+
 # --- Real components: MCQ & Slider (basic schema; safe defaults) ---
 def mcq_component(_id: str, parent_id: str, title: str, instruction_html: str, items: List[Tuple[str, bool]]) -> Dict[str, Any]:
     """
@@ -222,11 +273,12 @@ def mcq_component(_id: str, parent_id: str, title: str, instruction_html: str, i
     """
     d = component_common(_id, parent_id, "mcq", title)
     d["body"] = ""
-    d["instruction"] = instruction_html
+    d["instruction"] = title
     d["_items"] = [{"text": t, "_correct": bool(ok)} for (t, ok) in items]
     # lightweight feedback scaffold; Adapt plugins typically accept these keys
     d["_feedback"] = {"correct": "", "incorrect": "", "partlyCorrect": ""}
     d["_questionWeight"] = 1
+    d["_buttons"] = get_button_object()
     return d
 
 def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: int, label_start: str, label_end: str) -> Dict[str, Any]:
@@ -241,7 +293,9 @@ def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: in
     d["_scaleStep"] =  1
     d["labelStart"] = label_start
     d["labelEnd"] =  label_end
+    d["instruction"] = title
     d["_correctRange"] = {"_bottom": int(min_v), "_top": int(max_v)}
+    d["_buttons"] = get_button_object()
     return d
 
 # -------- Parsers for MCQ & Slider chunks --------

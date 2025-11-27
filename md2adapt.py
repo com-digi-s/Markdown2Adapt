@@ -255,12 +255,13 @@ def page_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
         "displayTitle": title
     }
 
-def article_template(_id: str, parent_id: str, title: str, assessment_id: int) -> Dict[str, Any]:
+def article_template(_id: str, parent_id: str, title: str, body: str, assessment_id: int) -> Dict[str, Any]:
     return {
         "_id": _id,
         "_parentId": parent_id,
         "_type": "article",
         "title": title,
+        "body": md_to_html(body),
         "displayTitle": "",
         "_articleBlockSlider": {
             "_isEnabled": False,
@@ -587,6 +588,25 @@ def _get_all_h2_sections(sections: List[Section], total_lines: int) -> List[Sect
         result.append(Section(level=2, title=s.title, start=s.start, end=end))
     return result
 
+def get_article_body(md: str, section: Section, sections: List[Section]):
+    """
+    Get body for Section 'section' (level=3) in md,
+    from the heading line (section.start) + 1 until the next heading, or end of doc.
+    Skips the heading line.
+    """
+    all_lines = md.splitlines()
+    start = section.start + 1
+    # Find the next heading _after_ this section (by line index, not by heading level)
+    next_heading_idx = None
+    for s in sections:
+        if s.start > section.start:
+            next_heading_idx = s.start
+            break
+    end = next_heading_idx if next_heading_idx is not None else len(all_lines)
+    # Build the body
+    lines = all_lines[start:end]
+    return "\n".join(lines).strip()
+
 # -------- Builder orchestrator --------
 def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], Dict]:
     ids = IdSpace()
@@ -650,11 +670,13 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
             a_heads = [s for s in sections if s.level == 3 and p_sec.start <= s.start < p_sec.end]
             if not a_heads:
                 a_heads = [Section(level=3, title=p_sec.title, start=p_sec.start, end=p_sec.end)]
-
+        print(a_heads)
         for a_sec in a_heads:
             article_id = ids.new()
             assesment_id=ids.new()
-            articles.append(article_template(article_id, page_id, a_sec.title, assessment_id=assesment_id))
+            # new body
+            article_body = get_article_body(md, a_sec, sections)
+            articles.append(article_template(article_id, page_id, a_sec.title, body=article_body, assessment_id=assesment_id))
 
             # Blocks
             if has_block_h2:

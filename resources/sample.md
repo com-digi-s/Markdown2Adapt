@@ -30,6 +30,13 @@ labelEnd: "10 = klar"
 * [ ] 2
 * [ ] 3
 
+### Component Matching title?
+
+Type: Matching
+Instruction: Match the countries to their capitals.
+- France: [x] Paris   [ ] Rome   [ ] Berlin
+- Germany: [ ] Paris   [ ] Rome   [x] Berlin
+
 ### Component mcq title - How many answers are right? (with feeedback keyword)
 
 * [x] 1

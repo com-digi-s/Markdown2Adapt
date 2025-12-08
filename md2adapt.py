@@ -451,6 +451,46 @@ def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: in
     d["_canShowFeedback"] = False
     return d
 
+
+def matching_component(
+    _id: str,
+    parent_id: str,
+    title: str,
+    instruction_html: str,
+    items: list,
+    feedback: str = None,
+    placeholder: str = "Please select an option"
+) -> dict:
+    d = component_common(_id, parent_id, "matching", title)
+    # Required fields
+    d["instruction"] = instruction_html
+    d["ariaQuestion"] = title
+    d["_attempts"] = 1
+    d["_shouldDisplayAttempts"] = False
+    d["_shouldResetAllAnswers"] = True
+    d["_isRandom"] = False
+    d["_isRandomQuestionOrder"] = False
+    d["_questionWeight"] = 1
+    d["_canShowModelAnswer"] = True
+    d["_canShowCorrectness"] = False
+    d["_canShowFeedback"] = False
+    d["_canShowMarking"] = True
+    d["_recordInteraction"] = True
+    d["placeholder"] = placeholder
+    d["_allowOnlyUniqueAnswers"] = False
+    d["_hasItemScoring"] = False
+    # Items (see below for format)
+    d["_items"] = items
+    if feedback is not None:
+        d["_canShowFeedback"] = True
+        d["_feedback"] = {
+            "title": "Feedback",
+            "correct": "Correct! " + feedback,
+            "_incorrect": {"final": "Incorrect. " + feedback, "notFinal": ""},
+            "_partlyCorrect": {"final": "Partially correct. " + feedback, "notFinal": ""}
+        }
+    return d
+
 # -------- Parsers for MCQ & Slider chunks --------
 MCQ_OPT_RES = [
     re.compile(r"^\s*[-*+]\s*\[(x|X| )\]\s*(.+)\s*$"),   # "- [x] text"
@@ -531,6 +571,40 @@ def parse_slider_chunk(md: str) -> Tuple[int, int, str, str]:
                 label_end = val
     return min_v, max_v, label_start, label_end
 
+def parse_matching_chunk(md: str) -> tuple:
+    """
+    Parse matching component from markdown.
+    Returns: (instruction_html, items, feedback)
+    Each item: {"text": question, "_options": [{"text": ..., "_isCorrect": bool}, ...]}
+    """
+    lines = [ln.rstrip() for ln in md.strip().splitlines()]
+    instruction_lines = []
+    feedback = None
+    items = []
+    in_options = False
+    for ln in lines:
+        if ln.strip().lower().startswith("feedback:"):
+            feedback = ln.split(":", 1)[1].strip()
+            continue
+        if ln.strip().lower().startswith("instruction:"):
+            instruction_lines.append(ln.split(':', 1)[1].strip())
+            continue
+        if re.match(r'^\s*(?:-|\d+\.)\s+', ln):
+            # Matching row e.g. - France: [ ] Paris [x] Rome [ ] Berlin
+            q_match = re.match(r'^\s*(?:-|\d+\.)\s*([^\:]+)\:\s*(.+)$', ln)
+            if q_match:
+                q_text = q_match.group(1).strip()
+                opts_part = q_match.group(2).strip()
+                options = []
+                for opts in re.findall(r"\[(x| )\]\s*([^\[\]]+)", opts_part, re.IGNORECASE):
+                    is_correct = opts[0].lower() == "x"
+                    opt_text = opts[1].strip()
+                    options.append({"text": opt_text, "_isCorrect": is_correct})
+                if options:
+                    items.append({"text": q_text, "_options": options})
+    instruction_html = md_to_html("\n".join(instruction_lines)) if instruction_lines else ""
+    return instruction_html, items, feedback
+
 def _looks_like_mcq(md: str) -> bool:
     for ln in md.strip().splitlines():
         for rx in MCQ_OPT_RES:
@@ -541,6 +615,13 @@ def _looks_like_mcq(md: str) -> bool:
 def _looks_like_slider(md: str) -> bool:
     for ln in md.strip().splitlines():
         if SL_SCALE_RE.match(ln) or SL_LABEL_RE.match(ln):
+            return True
+    return False
+
+def _looks_like_matching(md: str) -> bool:
+    # Type: matching on its own line triggers matching parsing
+    for ln in md.strip().splitlines():
+        if ln.strip().lower() == "type: matching":
             return True
     return False
 
@@ -726,6 +807,15 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
                             elif marker == "slider" or _looks_like_slider(sub_chunk):
                                 min_v, max_v, lstart, lend = parse_slider_chunk(sub_chunk)
                                 components.append(slider_component(comp_id, block_id, c_title or "Slider", min_v, max_v, lstart, lend))
+                            elif marker == "matching" or _looks_like_matching(sub_chunk):
+                                # <--- NEW: Matching component handling
+                                instr_html, items, feedback = parse_matching_chunk(sub_chunk)
+                                if items:
+                                    components.append(matching_component(
+                                        comp_id, block_id, c_title or "Matching", instr_html, items, feedback
+                                    ))
+                                else:
+                                    components.append(text_component(comp_id, block_id, c_title or "Matching", md_to_html(sub_chunk)))
                             else:
                                 # text or unknown -> TEXT
                                 html = md_to_html(sub_chunk) if sub_chunk.strip() else "<p></p>"

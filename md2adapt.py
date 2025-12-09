@@ -572,43 +572,58 @@ def parse_slider_chunk(md: str) -> Tuple[int, int, str, str]:
     return min_v, max_v, label_start, label_end
 
 def parse_matching_chunk(md: str) -> tuple:
-    """
-    Parse matching component from markdown.
-    Returns: (instruction_html, items, feedback)
-    Each item: {"text": question, "_options": [{"text": ..., "_isCorrect": bool}, ...]}
-    """
-    lines = [ln.rstrip() for ln in md.strip().splitlines()]
+    lines = md.splitlines()
     instruction_lines = []
     feedback = None
     items = []
-    in_options = False
+    current_question = None
+    current_options = []
+    
     for ln in lines:
-        if ln.strip().lower().startswith("feedback:"):
-            feedback = ln.split(":", 1)[1].strip()
+        stripped = ln.strip()
+        # Only strip for meta line detection:
+        if stripped.lower().startswith("type:") and "matching" in stripped.lower():
             continue
-        if ln.strip().lower().startswith("instruction:"):
-            instruction_lines.append(ln.split(':', 1)[1].strip())
+        if stripped.lower().startswith("instruction:"):
+            instruction_lines.append(stripped[len("instruction:"):].strip())
             continue
-        if re.match(r'^\s*(?:-|\d+\.)\s+', ln):
-            # Matching row e.g. - France: [ ] Paris [x] Rome [ ] Berlin
-            q_match = re.match(r'^\s*(?:-|\d+\.)\s*([^\:]+)\:\s*(.+)$', ln)
-            if q_match:
-                q_text = q_match.group(1).strip()
-                opts_part = q_match.group(2).strip()
-                options = []
-                for opts in re.findall(r"\[(x| )\]\s*([^\[\]]+)", opts_part, re.IGNORECASE):
-                    is_correct = opts[0].lower() == "x"
-                    opt_text = opts[1].strip()
-                    options.append({"text": opt_text, "_isCorrect": is_correct})
-                if options:
-                    items.append({"text": q_text, "_options": options})
+        if stripped.lower().startswith("feedback:"):
+            feedback = stripped[len("feedback:"):].strip()
+            continue
+        # Detect top-level question
+        m_q = re.match(r"^-\s+(.+)$", ln)
+    
+        if m_q:
+            if current_question is not None and current_options:
+                items.append({"text": current_question, "_options": current_options})
+            current_question = m_q.group(1).strip()
+            current_options = []
+            continue
+
+        # Detect option lines (must be indented)
+        m_opt = re.match(r"^[ \t]+[-*+] \[(x| )\]\s*(.+)", ln)
+        if m_opt and current_question is not None:
+            is_correct = m_opt.group(1).lower() == "x"
+            opt_text = m_opt.group(2).strip()
+            current_options.append({
+                "text": opt_text,
+                "_isCorrect": is_correct
+            })
+            continue
+
+    # End: flush the last group
+    if current_question is not None and current_options:
+        items.append({"text": current_question, "_options": current_options})
+
     instruction_html = md_to_html("\n".join(instruction_lines)) if instruction_lines else ""
     return instruction_html, items, feedback
 
 def _looks_like_mcq(md: str) -> bool:
+    if _looks_like_matching(md):
+        return False     # This block belongs to matching, not MCQ!
     for ln in md.strip().splitlines():
         for rx in MCQ_OPT_RES:
-            if rx.match(ln.rstrip()):
+            if rx.match(ln):
                 return True
     return False
 
@@ -808,7 +823,6 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
                                 min_v, max_v, lstart, lend = parse_slider_chunk(sub_chunk)
                                 components.append(slider_component(comp_id, block_id, c_title or "Slider", min_v, max_v, lstart, lend))
                             elif marker == "matching" or _looks_like_matching(sub_chunk):
-                                # <--- NEW: Matching component handling
                                 instr_html, items, feedback = parse_matching_chunk(sub_chunk)
                                 if items:
                                     components.append(matching_component(

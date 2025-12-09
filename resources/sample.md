@@ -34,8 +34,14 @@ labelEnd: "10 = klar"
 
 Type: Matching
 Instruction: Match the countries to their capitals.
-- France: [x] Paris   [ ] Rome   [ ] Berlin
-- Germany: [ ] Paris   [ ] Rome   [x] Berlin
+- France
+  - [x] Paris
+  - [ ] Rome
+  - [ ] Berlin
+- German
+  - [ ] Paris
+  - [ ] Rome
+  - [x] Berlin
 
 ### Component mcq title - How many answers are right? (with feeedback keyword)
 

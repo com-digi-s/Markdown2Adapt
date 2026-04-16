@@ -91,13 +91,19 @@ class IdSpace:
 
 # -------- Minimal Markdown-to-HTML (safe default) --------
 def md_to_html(md: str) -> str:
-    """Very small markdown→html converter (paragraphs + unordered lists + links)."""
+    """Very small markdown→html converter (paragraphs + unordered lists + links + images)."""
     lines = md.strip().splitlines()
     out: List[str] = []
     i = 0
     while i < len(lines):
         line = lines[i].rstrip()
         if not line.strip():
+            i += 1
+            continue
+        # standalone image line  ![alt](src)
+        if re.match(r"^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$", line):
+            m = re.match(r"^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$", line)
+            out.append(f'<img src="{m.group(2)}" alt="{m.group(1)}" style="max-width:100%">')
             i += 1
             continue
         # unordered list
@@ -119,10 +125,16 @@ def md_to_html(md: str) -> str:
     return "".join(out)
 
 def inline_md(text: str) -> str:
-    # very small inline markdown: **bold**, *italic*, [text](url)
+    # inline images first (before link pattern consumes the brackets)
+    text = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', r'<img src="\2" alt="\1" style="max-width:100%">', text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
-    text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', text)
+    def _link(m: re.Match) -> str:
+        label, href = m.group(1), m.group(2)
+        if href.startswith("http://") or href.startswith("https://") or href.startswith("#"):
+            return f'<a href="{href}">{label}</a>'
+        return f'<a href="{href}" download>{label}</a>'
+    text = re.sub(r"\[(.+?)\]\((.+?)\)", _link, text)
     return text
 
 # -------- Parse sections --------
@@ -263,7 +275,7 @@ def page_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
         "linkText": "View"
     }
 
-def article_template(_id: str, parent_id: str, title: str, body: str, assessment_id: int) -> Dict[str, Any]:
+def article_template(_id: str, parent_id: str, title: str, body: str) -> Dict[str, Any]:
     return {
         "_id": _id,
         "_parentId": parent_id,
@@ -277,7 +289,7 @@ def article_template(_id: str, parent_id: str, title: str, body: str, assessment
         },
         "_assessment": {
             "_isEnabled": False,                # Enable or disable this assessment per article
-            "_id": assessment_id,               # Unique name for this assessment
+            "_id": "",                          # Empty: no resolvable object; set a unique string only when _isEnabled is true
             "_suppressMarking": False,          # Suppresses question marking until assessment complete or all attempts used
             "_scoreToPass": 60,                  # Numeric or percent score required to pass
             "_correctToPass": 60,                # Numeric or percent correctness required to pass
@@ -652,20 +664,42 @@ def _looks_like_component(md: str) -> bool:
     return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md)
 
 # -------- Tiny front-matter (optional) --------
+def strip_frontmatter(md: str) -> str:
+    """
+    Remove a leading ---...--- YAML frontmatter block from the markdown, if present.
+    Returns the remaining content, left-stripped of leading blank lines.
+    """
+    lines = md.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return md
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return "".join(lines[i + 1:]).lstrip("\n")
+    return md  # no closing --- found; leave as-is
+
 def _extract_meta_titles(md: str) -> dict:
     """
-    Minimal front-matter parser:
-      - Reads KEY: "VALUE" lines that appear *before the first Markdown heading*.
-      - Ignores any dashed separators (--- or --------------).
-      - Recognizes arbitrary keys (e.g., pageTitle, articleTitle, parentMenuTitle, language, version).
+    Minimal front-matter parser.
+    Reads KEY: VALUE lines that appear before the first Markdown heading,
+    including inside a ---...--- block.  Accepts both quoted (key: "val")
+    and unquoted (key: val) forms.
     """
     meta = {}
     for line in md.splitlines():
+        stripped = line.strip()
         if HEADING_RE.match(line):
             break
-        m = re.match(r'^\s*([A-Za-z][\w-]*):\s*"(.*)"\s*$', line.strip())
+        if stripped in ("---", "") or stripped.startswith("#"):
+            continue
+        # quoted: key: "value"
+        m = re.match(r'^([A-Za-z][\w-]*):\s*"(.*)"\s*$', stripped)
         if m:
             meta[m.group(1)] = m.group(2)
+            continue
+        # unquoted: key: value
+        m = re.match(r'^([A-Za-z][\w-]*):\s*(.+)$', stripped)
+        if m:
+            meta[m.group(1)] = m.group(2).strip()
     return meta
 
 # -------- Helpers for the H2-[block] special case --------
@@ -812,10 +846,9 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
 
         for a_sec in a_heads:
             article_id = ids.new()
-            assesment_id=ids.new()
             # new body
             article_text_body = get_section_body(md, a_sec, sections)
-            articles.append(article_template(article_id, page_id, a_sec.title, body=article_text_body, assessment_id=assesment_id))
+            articles.append(article_template(article_id, page_id, a_sec.title, body=article_text_body))
 
             # Blocks
             if has_block_h2:
@@ -927,43 +960,76 @@ def write_jsons(out_dir: Path, content_objects, articles, blocks, components, co
     dump("components.json", components)
     dump("course.json", course)
 
-def swap_image_links(markdown: str, output_dir: Path) -> str:
+def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
     """
-    Swap image links in the markdown text to point to a downloaded version put into the output directory.
-    args:
-    - markdown: the original markdown text
-    - output_dir: the directory where downloaded images will be stored; should be a subdir of the course output dir
-    returns:
-    - the modified markdown text with swapped image links
+    Rewrite all local asset references in markdown so they point to copies inside
+    the Adapt course output directory.
+
+    - Images  (![alt](src))  → copied to resources/images/, path rewritten in-place.
+    - Other files ([text](src)) that are local paths → copied to resources/assets/,
+      path rewritten; inline_md will add a download attribute to the resulting <a>.
+    - Remote http/https URLs → downloaded to the appropriate subdirectory.
+    - Remote URLs in plain [text](http...) links are left untouched.
     """
-    def download_image(url: str) -> str:
-        """Download the image from the URL and save it to the output directory. Return the local filename."""
-        os.makedirs(output_dir, exist_ok=True)
+    import shutil
+
+    out_base = Path(out_base).resolve()
+
+    def _url_base(subdir: Path) -> str:
+        """Return the URL of subdir relative to the Adapt build root (via src/ boundary)."""
+        parts = subdir.parts
         try:
-            response = requests.get(url)
-            response.raise_for_status()
-            filename = url.split("/")[-1].split("?")[0]  # crude filename extraction
-            local_path = output_dir / filename
-            with open(local_path, "wb") as f:
-                f.write(response.content)
-            return local_path.name  # return just the filename for markdown link
+            src_idx = len(parts) - 1 - list(reversed(parts)).index("src")
+            return "/".join(parts[src_idx + 1:])
+        except ValueError:
+            return str(subdir)
+
+    img_dir   = out_base / "resources" / "images"
+    asset_dir = out_base / "resources" / "assets"
+    img_url   = _url_base(img_dir)
+    asset_url = _url_base(asset_dir)
+
+    def _copy_or_download(src: str, dest_dir: Path, url_base: str) -> Optional[str]:
+        """Copy/download src into dest_dir. Returns the rewritten URL or None on failure."""
+        os.makedirs(dest_dir, exist_ok=True)
+        is_remote = src.startswith("http://") or src.startswith("https://")
+        try:
+            filename = src.split("/")[-1].split("?")[0]
+            local_path = dest_dir / filename
+            if is_remote:
+                response = requests.get(src)
+                response.raise_for_status()
+                with open(local_path, "wb") as f:
+                    f.write(response.content)
+            else:
+                src_path = (md_dir / src).resolve()
+                if not src_path.exists():
+                    print(f"Warning: Asset not found: {src_path}", file=sys.stderr)
+                    return None
+                shutil.copy2(src_path, local_path)
+            return f"{url_base}/{filename}"
         except Exception as e:
-            print(f"Warning: Failed to download image {url}: {e}", file=sys.stderr)
-            return url  # fallback to original URL if download fails
+            print(f"Warning: Failed to process asset {src}: {e}", file=sys.stderr)
+            return None
+
+    def replace_image(match) -> str:
+        alt, src = match.group(1), match.group(2)
+        new_url = _copy_or_download(src, img_dir, img_url)
+        return f"![{alt}]({new_url})" if new_url else match.group(0)
 
     def replace_link(match) -> str:
-        """
-        Handler for regex substitution: given a markdown image link match,
-          download the image and return a new markdown link with the local path.
-        """
-        alt_text = match.group(1)
-        url = match.group(2)
-        new_url = download_image(url)
-        return f"![{alt_text}]({new_url})"
+        text, href = match.group(1), match.group(2)
+        # Leave remote URLs and anchors as-is
+        if href.startswith("http://") or href.startswith("https://") or href.startswith("#"):
+            return match.group(0)
+        # Local file reference → copy to assets dir
+        new_url = _copy_or_download(href, asset_dir, asset_url)
+        return f"[{text}]({new_url})" if new_url else match.group(0)
 
-    # Regex to find markdown image links: ![alt](url)
-    img_link_re = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
-    return img_link_re.sub(replace_link, markdown)
+    # Process images first, then file links
+    markdown = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', replace_image, markdown)
+    markdown = re.sub(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', replace_link, markdown)
+    return markdown
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Convert Markdown into Adapt JSON (menu/page/article/block/components + course.json).")
@@ -980,13 +1046,16 @@ def main(argv=None):
         sys.exit(2)
 
     md = md_path.read_text(encoding="utf-8")
+    # Extract meta from raw markdown (including frontmatter block) first,
+    # then strip the ---...--- block so it never appears as body content.
     meta = _extract_meta_titles(md)
+    md = strip_frontmatter(md)
     # Prefer front-matter if present; CLI flags remain valid fallbacks.
     eff_lang = meta.get("language", args.lang)
     eff_menu = meta.get("parentMenuTitle", args.menu)
 
     if not args.no_swap_images:
-        md = swap_image_links(md, args.out+"/resources/images")
+        md = swap_asset_links(md, Path(args.out), md_path.parent)
 
     content_objects, articles, blocks, components, course = build_from_markdown(md, eff_lang, eff_menu)
 

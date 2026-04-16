@@ -145,7 +145,9 @@ def inline_md(text: str) -> str:
     def _link(m: re.Match[str]) -> str:
         label = m.group(1)
         href = m.group(2)
-        if href.startswith(("http://", "https://", "#", "mailto:", "tel:")):
+        if href.startswith(("http://", "https://")):
+            return f'<a href="{href}" target="_blank" rel="noopener noreferrer">{label}</a>'
+        if href.startswith(("#", "mailto:", "tel:")):
             return f'<a href="{href}">{label}</a>'
         return f'<a href="{href}" download>{label}</a>'
 
@@ -155,7 +157,7 @@ def inline_md(text: str) -> str:
     def _autolink(m: re.Match[str]) -> str:
         url = m.group(0)
         safe = html.escape(url, quote=True)
-        return f'<a href="{safe}" class="md-url">{safe}</a>'
+        return f'<a href="{safe}" class="md-url" target="_blank" rel="noopener noreferrer">{safe}</a>'
 
     text = re.sub(r'(?<!["\'=>])\bhttps?://[^\s<>"\')\]]+', _autolink, text)
     return text
@@ -576,13 +578,10 @@ def reflection_component(
     d["_allowsAnyCase"] = True
     d["_allowsPunctuation"] = True
     d["_items"] = [{"placeholder": placeholder, "_answers": [""]}]
-    # Only show submit; hide show-feedback (handled via notify tutor + CSS)
-    d["_buttons"] = {
-        "_submit": {"buttonText": "Abgeben", "ariaLabel": "Abgeben"},
-        "_showFeedback": {"buttonText": "", "ariaLabel": ""},
-    }
+    d["_buttons"] = {"_submit": {"buttonText": "Abgeben", "ariaLabel": "Abgeben"}}
     d["_tutor"] = {
         "_isInherited": False,
+        "_isEnabled": True,
         "_type": "notify",
         "_classes": "",
         "_hasNotifyBottomButton": False,
@@ -590,7 +589,7 @@ def reflection_component(
     }
     fb = feedback or "Vielen Dank für Ihre Gedanken!"
     d["_feedback"] = {
-        "title": "",
+        "title": "Feedback",
         "correct": fb,
         "_incorrect": {"final": fb, "notFinal": ""},
         "_partlyCorrect": {"final": fb, "notFinal": ""},
@@ -1188,6 +1187,9 @@ def _migrate_asset_ref(ref: str, kind: str, config: AssetConfig, report: AssetMi
         return ref
 
     if _is_remote_ref(ref):
+        # External web links are never downloaded — only media assets are vendored.
+        if kind == "link":
+            return ref
         if not config.download_remote_assets:
             report.skipped_remote.append(ref)
             return ref

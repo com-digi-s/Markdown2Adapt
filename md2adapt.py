@@ -960,7 +960,7 @@ def write_jsons(out_dir: Path, content_objects, articles, blocks, components, co
     dump("components.json", components)
     dump("course.json", course)
 
-def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
+def swap_asset_links(markdown: str, out_base: Path, md_dir: Path, debug: bool|int = False) -> str:
     """
     Rewrite all local asset references in markdown so they point to copies inside
     the Adapt course output directory.
@@ -970,10 +970,20 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
       path rewritten; inline_md will add a download attribute to the resulting <a>.
     - Remote http/https URLs → downloaded to the appropriate subdirectory.
     - Remote URLs in plain [text](http...) links are left untouched.
+
+    args:
+    - markdown: the original markdown content
+    - out_base: the base output directory for the Adapt course (e.g., course/en)
+    - md_dir: the directory of the input markdown file, used to resolve relative paths for local assets
+    - debug: whether to print debug information (1|True for some extra output, 2 for verbose)
+
+    returns:
+    - the markdown content with asset links rewritten to point to the Adapt course resources
     """
     import shutil
     DOWNLOAD_USER_AGENT = "md2adapt (https://github.com/com-digi-s/Markdown2Adapt)"
     TIMEOUT_SECONDS = 10
+    image_counter = 0
 
     out_base = Path(out_base).resolve()
 
@@ -997,8 +1007,11 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
         is_remote = src.startswith("http://") or src.startswith("https://")
         try:
             filename = src.split("/")[-1].split("?")[0]
-            local_path = dest_dir / filename
+            filename_safe = re.sub(r'[^A-Za-z0-9._-]', '_', filename)
+            local_path = dest_dir / filename_safe
             if is_remote:
+                if debug and debug > 1:
+                    print(f"  Downloading remote asset: {src} → {local_path}")
                 response = requests.get(src, headers={"User-Agent": DOWNLOAD_USER_AGENT}, timeout=TIMEOUT_SECONDS)
                 response.raise_for_status()
                 with open(local_path, "wb") as f:
@@ -1008,16 +1021,25 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
                 if not src_path.exists():
                     print(f"Warning: Asset not found: {src_path}", file=sys.stderr)
                     return None
+                if debug and debug > 1:
+                    print(f"  Copying local asset: {src_path} → {local_path}")
                 shutil.copy2(src_path, local_path)
-            return f"{url_base}/{filename}"
+            return f"{url_base}/{filename_safe}"
         except Exception as e:
             print(f"Warning: Failed to process asset {src}: {e}", file=sys.stderr)
             return None
 
     def replace_image(match) -> str:
-        alt, src = match.group(1), match.group(2)
+        alt_text, src = match.group(1), match.group(2)
+        title = match.group(4) if match.lastindex and match.lastindex >= 4 else None
+
         new_url = _copy_or_download(src, img_dir, img_url)
-        return f"![{alt}]({new_url})" if new_url else match.group(0)
+        new_markdown = f'![{alt_text}]({new_url}{" \""+title+"\"" if title else ""})' if new_url else match.group(0)
+        nonlocal image_counter
+        image_counter += 1
+        if debug:
+            print(f"  Image link updated: {match.group(0)} → {new_markdown}")
+        return new_markdown
 
     def replace_link(match) -> str:
         text, href = match.group(1), match.group(2)
@@ -1026,11 +1048,15 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
             return match.group(0)
         # Local file reference → copy to assets dir
         new_url = _copy_or_download(href, asset_dir, asset_url)
-        return f"[{text}]({new_url})" if new_url else match.group(0)
+        new_markdown = f"[{text}]({new_url})" if new_url else match.group(0)
+        if debug:
+            print(f"  Link updated: {match.group(0)} → {new_markdown}")
+        return new_markdown
 
     # Process images first, then file links
-    markdown = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', replace_image, markdown)
+    markdown = re.sub(r'!\[([^\]]*)\]\((\S+?)(?:\s+(["\'])(.*?)\3)?\)', replace_image, markdown)
     markdown = re.sub(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', replace_link, markdown)
+    print(f"Total images processed: {image_counter}")
     return markdown
 
 def main(argv=None):
@@ -1057,7 +1083,7 @@ def main(argv=None):
     eff_menu = meta.get("parentMenuTitle", args.menu)
 
     if not args.no_swap_images:
-        md = swap_asset_links(md, Path(args.out), md_path.parent)
+        md = swap_asset_links(md, Path(args.out), md_path.parent, debug=False)
 
     content_objects, articles, blocks, components, course = build_from_markdown(md, eff_lang, eff_menu)
 

@@ -47,7 +47,9 @@
 # - Monotonic unique _trackingId for blocks
 #
 import argparse, json, re, sys
+import requests
 import markdown
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -925,12 +927,51 @@ def write_jsons(out_dir: Path, content_objects, articles, blocks, components, co
     dump("components.json", components)
     dump("course.json", course)
 
+def swap_image_links(markdown: str, output_dir: Path) -> str:
+    """
+    Swap image links in the markdown text to point to a downloaded version put into the output directory.
+    args:
+    - markdown: the original markdown text
+    - output_dir: the directory where downloaded images will be stored; should be a subdir of the course output dir
+    returns:
+    - the modified markdown text with swapped image links
+    """
+    def download_image(url: str) -> str:
+        """Download the image from the URL and save it to the output directory. Return the local filename."""
+        os.makedirs(output_dir, exist_ok=True)
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            filename = url.split("/")[-1].split("?")[0]  # crude filename extraction
+            local_path = output_dir / filename
+            with open(local_path, "wb") as f:
+                f.write(response.content)
+            return local_path.name  # return just the filename for markdown link
+        except Exception as e:
+            print(f"Warning: Failed to download image {url}: {e}", file=sys.stderr)
+            return url  # fallback to original URL if download fails
+
+    def replace_link(match) -> str:
+        """
+        Handler for regex substitution: given a markdown image link match,
+          download the image and return a new markdown link with the local path.
+        """
+        alt_text = match.group(1)
+        url = match.group(2)
+        new_url = download_image(url)
+        return f"![{alt_text}]({new_url})"
+
+    # Regex to find markdown image links: ![alt](url)
+    img_link_re = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+    return img_link_re.sub(replace_link, markdown)
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Convert Markdown into Adapt JSON (menu/page/article/block/components + course.json).")
     ap.add_argument("input_md", help="Path to Markdown file")
     ap.add_argument("--out", default="course/en", help="Output folder (e.g., course/en)")
     ap.add_argument("--lang", default="en", help="Default language code for course.json")
     ap.add_argument("--menu", default="Menu", help="Menu title")
+    ap.add_argument("--no-swap-images", action="store_true", help="Disable automatic downloading and swapping of image links in markdown")
     args = ap.parse_args(argv)
 
     md_path = Path(args.input_md)
@@ -943,6 +984,9 @@ def main(argv=None):
     # Prefer front-matter if present; CLI flags remain valid fallbacks.
     eff_lang = meta.get("language", args.lang)
     eff_menu = meta.get("parentMenuTitle", args.menu)
+
+    if not args.no_swap_images:
+        md = swap_image_links(md, args.out+"/resources/images")
 
     content_objects, articles, blocks, components, course = build_from_markdown(md, eff_lang, eff_menu)
 

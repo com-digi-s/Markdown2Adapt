@@ -1,51 +1,79 @@
-# Article title
+# Beispielkurs
 
-*Here* is a markdown body of an article.
+Willkommen im Beispielkurs. Diese Seite zeigt alle unterstützten Komponenten.
 
-## Block title
+## Text
 
-And *here* is the body of the block.
+### Was ist Markdown?
 
-### Component text title
+Alles in einer Textkomponente wird als Markdown gerendert.
 
-Everything found inside of this text component will be rendered as Markdown.
-So 
+- *Kursiv*, **fett**, `Code`
+- > Blockzitate funktionieren ebenfalls
+- Links wie [dieser hier](https://www.markdownguide.org/) werden unterstützt
 
-* *this*,
-* **this**,
-* `this`, and 
-* > even this will work.
+## MCQ
 
-For more information about Markdown have a look [here](https://www.markdownguide.org/).
+### Wie viele Kontinente gibt es auf der Erde?
 
-### Component slider title - key words for slider needed
+* [ ] 5
+* [x] 7
+* [ ] 9
+
+### Welche der folgenden Sprachen ist objektorientiert? (mit Feedback)
+
+* [ ] HTML
+* [x] Python
+* [ ] CSS
+
+Feedback: HTML und CSS sind Auszeichnungssprachen, keine Programmiersprachen. Python ist objektorientiert.
+
+## Slider
+
+### Wie sicher fühlen Sie sich im Umgang mit diesem Thema?
 
 scale: 1..10
-labelStart: "1 = wenig"
-labelEnd: "10 = klar"
+labelStart: "1 = gar nicht sicher"
+labelEnd: "10 = sehr sicher"
 
-### Component mcq title - How many answers are right?
+## Matching
 
-* [x] 1
-* [ ] 2
-* [ ] 3
-
-### Component Matching title?
+### Ordnen Sie die Hauptstädte den Ländern zu.
 
 Type: Matching
-Instruction: Match the countries to their capitals.
-- France
+Instruction: Wählen Sie die richtige Hauptstadt für jedes Land.
+- Frankreich
   - [x] Paris
-  - [ ] Rome
+  - [ ] Rom
   - [ ] Berlin
-- German
+- Deutschland
   - [ ] Paris
-  - [ ] Rome
+  - [ ] Rom
   - [x] Berlin
+- Italien
+  - [ ] Paris
+  - [x] Rom
+  - [ ] Berlin
 
-### Component mcq title - How many answers are right? (with feeedback keyword)
+## Reflexion
 
-* [x] 1
-* [ ] 2
-* [ ] 3
-Feedback: Only one answer is right.
+### Wie würden Sie das Gelernte in Ihrem Alltag anwenden?
+
+Type: Reflection
+Placeholder: "Schreiben Sie Ihre Gedanken hier..."
+Feedback: Vielen Dank für Ihre Reflexion!
+
+## Akkordeon
+
+### Häufig gestellte Fragen
+
+Type: Accordion
+
+**Was ist der Unterschied zwischen Text und HTML?**
+Text ist reiner Inhalt ohne Formatierung. HTML fügt Struktur und Bedeutung hinzu, z. B. Überschriften, Absätze und Links.
+
+**Warum ist Feedback bei Fragen wichtig?**
+Feedback hilft Lernenden, ihre Antworten einzuordnen und aus Fehlern zu lernen.
+
+**Kann ich mehrere Komponenten auf einer Seite kombinieren?**
+Ja – jeder Abschnitt mit einer `###`-Überschrift wird als eigene Komponente erkannt und entsprechend dargestellt.

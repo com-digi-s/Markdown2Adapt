@@ -294,11 +294,11 @@ def course_template(
         "_defaultLanguage": lang,
         "_defaultDirection": "ltr",
         "_mcq": {
-            "ariaRegion": "Multiple choice question",
-            "ariaCorrectAnswer": "The correct answer is {{{correctAnswer}}}",
-            "ariaCorrectAnswers": "The correct answers are {{{correctAnswer}}}",
-            "ariaUserAnswer": "The answer you chose was {{{userAnswer}}}",
-            "ariaUserAnswers": "The answers you chose were {{{userAnswer}}}",
+            "ariaRegion": "Multiple-Choice-Frage",
+            "ariaCorrectAnswer": "Die richtige Antwort lautet {{{correctAnswer}}}",
+            "ariaCorrectAnswers": "Die richtigen Antworten lauten {{{correctAnswer}}}",
+            "ariaUserAnswer": "Ihre gewählte Antwort war {{{userAnswer}}}",
+            "ariaUserAnswers": "Ihre gewählten Antworten waren {{{userAnswer}}}",
         },
         "_buttons": {
             "_submit": {"buttonText": "Antwort abgeben", "ariaLabel": "Antwort abgeben"},
@@ -350,11 +350,11 @@ def course_template(
 
 
 def menu_template(_id: str, title: str) -> Dict[str, Any]:
-    return {"_type": "menu", "_id": _id, "_parentId": "course", "title": title, "displayTitle": title, "linkText": "View"}
+    return {"_type": "menu", "_id": _id, "_parentId": "course", "title": title, "displayTitle": title, "linkText": "Starten"}
 
 
 def page_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
-    return {"_type": "page", "_id": _id, "_parentId": parent_id, "title": title, "displayTitle": title, "linkText": "View"}
+    return {"_type": "page", "_id": _id, "_parentId": parent_id, "title": title, "displayTitle": title, "linkText": "Starten"}
 
 
 def article_template(_id: str, parent_id: str, title: str, body: str) -> Dict[str, Any]:
@@ -506,7 +506,7 @@ def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: in
     d["_scaleStep"] = 1
     d["labelStart"] = label_start
     d["labelEnd"] = label_end
-    d["instruction"] = "Bitte gib eine Einschätzung ab!"
+    d["instruction"] = "Bitte geben Sie eine Einschätzung ab!"
     d["_correctRange"] = {"_bottom": int(min_v), "_top": int(max_v)}
     d["_buttons"] = get_slider_button_object()
     d["_canShowFeedback"] = False
@@ -520,7 +520,7 @@ def matching_component(
     instruction_html: str,
     items: List[Dict[str, Any]],
     feedback: Optional[str] = None,
-    placeholder: str = "Please select an option",
+    placeholder: str = "Bitte wählen Sie eine Option",
 ) -> Dict[str, Any]:
     d = component_common(_id, parent_id, "matching", title)
     d["instruction"] = instruction_html or ""
@@ -544,9 +544,9 @@ def matching_component(
         d["_canShowFeedback"] = True
         d["_feedback"] = {
             "title": "Feedback",
-            "correct": "Correct! " + feedback,
-            "_incorrect": {"final": "Incorrect. " + feedback, "notFinal": ""},
-            "_partlyCorrect": {"final": "Partially correct. " + feedback, "notFinal": ""},
+            "correct": "Korrekt! " + feedback,
+            "_incorrect": {"final": "Leider nicht. " + feedback, "notFinal": ""},
+            "_partlyCorrect": {"final": "Zum Teil richtig. " + feedback, "notFinal": ""},
         }
     return d
 
@@ -556,10 +556,11 @@ def reflection_component(
     parent_id: str,
     title: str,
     prompt_html: str,
-    placeholder: str = "Write your thoughts here…",
+    placeholder: str = "Schreiben Sie hier Ihre Gedanken…",
     feedback: Optional[str] = None,
 ) -> Dict[str, Any]:
     d = component_common(_id, parent_id, "textinput", title)
+    d["_classes"] = "md-reflection"
     d["body"] = prompt_html
     d["instruction"] = ""
     d["ariaQuestion"] = title
@@ -570,21 +571,30 @@ def reflection_component(
     d["_canShowModelAnswer"] = False
     d["_canShowCorrectness"] = False
     d["_canShowMarking"] = False
-    d["_canShowFeedback"] = bool(feedback)
+    d["_canShowFeedback"] = True
     d["_recordInteraction"] = False
     d["_allowsAnyCase"] = True
     d["_allowsPunctuation"] = True
-    # A single generic answer that can never truly "fail" — correctness display
-    # is hidden anyway; this prevents the submit button being blocked.
-    d["_answers"] = [[""]]
-    d["_items"] = [{"placeholder": placeholder, "_answers": [[""]]}]
-    if feedback:
-        d["_feedback"] = {
-            "title": "",
-            "correct": feedback,
-            "_incorrect": {"final": feedback, "notFinal": ""},
-            "_partlyCorrect": {"final": feedback, "notFinal": ""},
-        }
+    d["_items"] = [{"placeholder": placeholder, "_answers": [""]}]
+    # Only show submit; hide show-feedback (handled via notify tutor + CSS)
+    d["_buttons"] = {
+        "_submit": {"buttonText": "Abgeben", "ariaLabel": "Abgeben"},
+        "_showFeedback": {"buttonText": "", "ariaLabel": ""},
+    }
+    d["_tutor"] = {
+        "_isInherited": False,
+        "_type": "notify",
+        "_classes": "",
+        "_hasNotifyBottomButton": False,
+        "_button": {"text": "{{_globals._extensions._tutor.hideFeedback}}", "ariaLabel": "{{_globals._extensions._tutor.hideFeedback}}"},
+    }
+    fb = feedback or "Vielen Dank für Ihre Gedanken!"
+    d["_feedback"] = {
+        "title": "",
+        "correct": fb,
+        "_incorrect": {"final": fb, "notFinal": ""},
+        "_partlyCorrect": {"final": fb, "notFinal": ""},
+    }
     return d
 
 
@@ -738,8 +748,84 @@ def _looks_like_slider(md: str) -> bool:
     return any(SL_SCALE_RE.match(ln) or SL_LABEL_RE.match(ln) for ln in md.strip().splitlines())
 
 
+_ACCORDION_ITEM_RE = re.compile(r"^\*\*(.+)\*\*\s*$")
+
+def _looks_like_accordion(md: str) -> bool:
+    return any(re.match(r"^\s*Type\s*:\s*Accordion\s*$", ln, re.IGNORECASE)
+               for ln in md.strip().splitlines())
+
+
+def parse_accordion_chunk(md: str) -> List[Dict[str, str]]:
+    """Return list of {title, body} dicts for each **Bold Title** / body pair."""
+    items: List[Dict[str, str]] = []
+    current_title: Optional[str] = None
+    body_lines: List[str] = []
+
+    for ln in md.strip().splitlines():
+        if re.match(r"^\s*Type\s*:\s*Accordion\s*$", ln, re.IGNORECASE):
+            continue
+        m = _ACCORDION_ITEM_RE.match(ln.strip())
+        if m:
+            if current_title is not None:
+                items.append({"title": current_title, "body": md_to_html("\n".join(body_lines).strip())})
+            current_title = m.group(1).strip()
+            body_lines = []
+        else:
+            if current_title is not None:
+                body_lines.append(ln)
+
+    if current_title is not None:
+        items.append({"title": current_title, "body": md_to_html("\n".join(body_lines).strip())})
+
+    return items
+
+
+def accordion_component(
+    _id: str,
+    parent_id: str,
+    title: str,
+    items: List[Dict[str, str]],
+) -> Dict[str, Any]:
+    d = component_common(_id, parent_id, "accordion", title)
+    d["body"] = ""
+    d["instruction"] = ""
+    d["_items"] = [
+        {
+            "title": item["title"],
+            "body": item["body"],
+            "_graphic": {"src": "", "alt": ""},
+            "_classes": "",
+        }
+        for item in items
+    ]
+    return d
+
+
 def _looks_like_component(md: str) -> bool:
-    return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md) or _looks_like_reflection(md)
+    return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md) or _looks_like_reflection(md) or _looks_like_accordion(md)
+
+
+def _dispatch_component(comp_id: str, block_id: str, title: str, chunk: str) -> Dict[str, Any]:
+    """Return the right component object based on chunk content."""
+    if _looks_like_mcq(chunk):
+        instr_html, items, feedback = parse_mcq_chunk(chunk)
+        if items:
+            return mcq_component(comp_id, block_id, title, instr_html, items, feedback)
+    elif _looks_like_slider(chunk):
+        min_v, max_v, lstart, lend = parse_slider_chunk(chunk)
+        return slider_component(comp_id, block_id, title, min_v, max_v, lstart, lend)
+    elif _looks_like_matching(chunk):
+        instr_html, items, feedback = parse_matching_chunk(chunk)
+        if items:
+            return matching_component(comp_id, block_id, title, instr_html, items, feedback)
+    elif _looks_like_reflection(chunk):
+        prompt_html, placeholder, feedback = parse_reflection_chunk(chunk)
+        return reflection_component(comp_id, block_id, title, prompt_html, placeholder, feedback)
+    elif _looks_like_accordion(chunk):
+        acc_items = parse_accordion_chunk(chunk)
+        if acc_items:
+            return accordion_component(comp_id, block_id, title, acc_items)
+    return text_component(comp_id, block_id, title, chunk)
 
 
 # -------- Tiny front-matter (optional) --------
@@ -1605,31 +1691,12 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict[
                 if has_block_h2 and sub_heads:
                     for sub in sub_heads:
                         comp_id = ids.new()
-                        marker, c_title = split_marker(sub.title)
+                        _, c_title = split_marker(sub.title)
                         sub_chunk = get_section_text(md, sub, sections, total_lines)
-                        if marker == "mcq" or _looks_like_mcq(sub_chunk):
-                            instr_html, items, feedback = parse_mcq_chunk(sub_chunk)
-                            if items:
-                                components.append(mcq_component(comp_id, block_id, c_title or "", instr_html, items, feedback))
-                            else:
-                                components.append(text_component(comp_id, block_id, c_title or "", sub_chunk))
-                        elif marker == "slider" or _looks_like_slider(sub_chunk):
-                            min_v, max_v, lstart, lend = parse_slider_chunk(sub_chunk)
-                            components.append(slider_component(comp_id, block_id, c_title or "", min_v, max_v, lstart, lend))
-                        elif marker == "matching" or _looks_like_matching(sub_chunk):
-                            instr_html, items, feedback = parse_matching_chunk(sub_chunk)
-                            if items:
-                                components.append(matching_component(comp_id, block_id, c_title or "", instr_html, items, feedback))
-                            else:
-                                components.append(text_component(comp_id, block_id, c_title or "", sub_chunk))
-                        elif marker == "reflection" or _looks_like_reflection(sub_chunk):
-                            prompt_html, placeholder, feedback = parse_reflection_chunk(sub_chunk)
-                            components.append(reflection_component(comp_id, block_id, c_title or "", prompt_html, placeholder, feedback))
-                        else:
-                            components.append(text_component(comp_id, block_id, c_title or "", sub_chunk if sub_chunk.strip() else ""))
+                        components.append(_dispatch_component(comp_id, block_id, c_title or "", sub_chunk))
                 else:
                     comp_id = ids.new()
-                    components.append(text_component(comp_id, block_id, "", chunk if chunk.strip() else ""))
+                    components.append(_dispatch_component(comp_id, block_id, "", chunk if chunk.strip() else ""))
 
     return [menu] + pages, articles, blocks, components, course
 

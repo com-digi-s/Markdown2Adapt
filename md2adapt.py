@@ -150,6 +150,14 @@ def inline_md(text: str) -> str:
         return f'<a href="{href}" download>{label}</a>'
 
     text = re.sub(r"\[([^\]]+)\]\(([^\s)]+)(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\)", _link, text)
+
+    # Autolink bare URLs (not already inside an href="…" or >…</a>)
+    def _autolink(m: re.Match[str]) -> str:
+        url = m.group(0)
+        safe = html.escape(url, quote=True)
+        return f'<a href="{safe}" class="md-url">{safe}</a>'
+
+    text = re.sub(r'(?<!["\'=>])\bhttps?://[^\s<>"\')\]]+', _autolink, text)
     return text
 
 
@@ -543,6 +551,43 @@ def matching_component(
     return d
 
 
+def reflection_component(
+    _id: str,
+    parent_id: str,
+    title: str,
+    prompt_html: str,
+    placeholder: str = "Write your thoughts here…",
+    feedback: Optional[str] = None,
+) -> Dict[str, Any]:
+    d = component_common(_id, parent_id, "textinput", title)
+    d["body"] = prompt_html
+    d["instruction"] = ""
+    d["ariaQuestion"] = title
+    d["_attempts"] = 1
+    d["_shouldDisplayAttempts"] = False
+    d["_isRandom"] = False
+    d["_questionWeight"] = 0
+    d["_canShowModelAnswer"] = False
+    d["_canShowCorrectness"] = False
+    d["_canShowMarking"] = False
+    d["_canShowFeedback"] = bool(feedback)
+    d["_recordInteraction"] = False
+    d["_allowsAnyCase"] = True
+    d["_allowsPunctuation"] = True
+    # A single generic answer that can never truly "fail" — correctness display
+    # is hidden anyway; this prevents the submit button being blocked.
+    d["_answers"] = [[""]]
+    d["_items"] = [{"placeholder": placeholder, "_answers": [[""]]}]
+    if feedback:
+        d["_feedback"] = {
+            "title": "",
+            "correct": feedback,
+            "_incorrect": {"final": feedback, "notFinal": ""},
+            "_partlyCorrect": {"final": feedback, "notFinal": ""},
+        }
+    return d
+
+
 MCQ_OPT_RES = [
     re.compile(r"^\s*[-*+]\s*\[(x|X| )\]\s*(.+)\s*$"),
     re.compile(r"^\s*\[(x|X| )\]\s*(.+)\s*$"),
@@ -656,8 +701,35 @@ def _looks_like_matching(md: str) -> bool:
     return any(ln.strip().lower() == "type: matching" for ln in md.strip().splitlines())
 
 
+def _looks_like_reflection(md: str) -> bool:
+    return any(re.match(r"^\s*Type\s*:\s*Reflection\s*$", ln, re.IGNORECASE)
+               for ln in md.strip().splitlines())
+
+
+def parse_reflection_chunk(md: str) -> Tuple[str, str, Optional[str]]:
+    """Return (prompt_html, placeholder, feedback_or_None)."""
+    lines = md.strip().splitlines()
+    prompt_lines: List[str] = []
+    placeholder = "Write your thoughts here…"
+    feedback: Optional[str] = None
+    for ln in lines:
+        if re.match(r"^\s*Type\s*:\s*Reflection\s*$", ln, re.IGNORECASE):
+            continue
+        m = re.match(r"^\s*Placeholder\s*:\s*(.+)$", ln, re.IGNORECASE)
+        if m:
+            placeholder = m.group(1).strip().strip('"')
+            continue
+        m = re.match(r"^\s*Feedback\s*:\s*(.+)$", ln, re.IGNORECASE)
+        if m:
+            feedback = m.group(1).strip()
+            continue
+        prompt_lines.append(ln)
+    prompt_html = md_to_html("\n".join(prompt_lines)) if prompt_lines else ""
+    return prompt_html, placeholder, feedback
+
+
 def _looks_like_mcq(md: str) -> bool:
-    if _looks_like_matching(md):
+    if _looks_like_matching(md) or _looks_like_reflection(md):
         return False
     return any(rx.match(ln) for ln in md.strip().splitlines() for rx in MCQ_OPT_RES)
 
@@ -667,7 +739,7 @@ def _looks_like_slider(md: str) -> bool:
 
 
 def _looks_like_component(md: str) -> bool:
-    return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md)
+    return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md) or _looks_like_reflection(md)
 
 
 # -------- Tiny front-matter (optional) --------
@@ -1428,7 +1500,7 @@ def swap_asset_links(
 
 # -------- Builder orchestrator --------
 def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
-    md, hero_image = extract_first_image(md)
+    hero_image = None
     ids = IdSpace()
     sections = parse_headings(md)
     total_lines = len(md.splitlines())
@@ -1550,6 +1622,9 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict[
                                 components.append(matching_component(comp_id, block_id, c_title or "", instr_html, items, feedback))
                             else:
                                 components.append(text_component(comp_id, block_id, c_title or "", sub_chunk))
+                        elif marker == "reflection" or _looks_like_reflection(sub_chunk):
+                            prompt_html, placeholder, feedback = parse_reflection_chunk(sub_chunk)
+                            components.append(reflection_component(comp_id, block_id, c_title or "", prompt_html, placeholder, feedback))
                         else:
                             components.append(text_component(comp_id, block_id, c_title or "", sub_chunk if sub_chunk.strip() else ""))
                 else:

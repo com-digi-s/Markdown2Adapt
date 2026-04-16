@@ -465,7 +465,7 @@ def mcq_component(
 ) -> Dict[str, Any]:
     d = component_common(_id, parent_id, "mcq", title)
     d["body"] = ""
-    d["instruction"] = instruction_html or "Bitte wähle die richtige Antwort aus!"
+    d["instruction"] = instruction_html or "Bitte wählen Sie die richtige Antwort aus!"
     defaults = {"_isPartlyCorrect": False, "feedback": ""}
     d["_items"] = [dict(text=t, _shouldBeSelected=ok, **defaults) for t, ok in items]
     d["_attempts"] = 1

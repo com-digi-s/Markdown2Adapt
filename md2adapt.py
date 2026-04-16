@@ -50,6 +50,7 @@ import argparse, json, re, sys
 import requests
 import markdown
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -980,7 +981,6 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path, debug: bool|in
     returns:
     - the markdown content with asset links rewritten to point to the Adapt course resources
     """
-    import shutil
     DOWNLOAD_USER_AGENT = "md2adapt (https://github.com/com-digi-s/Markdown2Adapt)"
     TIMEOUT_SECONDS = 10
     image_counter = 0

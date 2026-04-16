@@ -1036,7 +1036,7 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path, debug: bool|in
         title = match.group(4) if match.lastindex and match.lastindex >= 4 else None
 
         new_url = _copy_or_download(src, img_dir, img_url)
-        new_markdown = f'![{alt_text}]({new_url}{" \""+title+"\"" if title else ""})' if new_url else match.group(0)
+        new_markdown = (f"![{alt_text}]({new_url}" + ((" \"" + title + "\"") if title else "") ) if new_url else match.group(0)
         nonlocal image_counter
         image_counter += 1
         if debug:

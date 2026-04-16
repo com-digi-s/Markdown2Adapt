@@ -6,7 +6,7 @@
 
 Before running **md2adapt**, make sure you have the following software installed:
 
-- **Python 3.7+**  
+- **Python 3.10+**
   The tool is written in Python.
 - **pip**  
   For managing Python packages.

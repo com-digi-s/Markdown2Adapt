@@ -467,7 +467,7 @@ def mcq_component(
 ) -> Dict[str, Any]:
     d = component_common(_id, parent_id, "mcq", title)
     d["body"] = ""
-    d["instruction"] = instruction_html or "Bitte wählen Sie die richtige Antwort aus!"
+    d["instruction"] = instruction_html or ""
     defaults = {"_isPartlyCorrect": False, "feedback": ""}
     d["_items"] = [dict(text=t, _shouldBeSelected=ok, **defaults) for t, ok in items]
     d["_attempts"] = 1
@@ -508,7 +508,7 @@ def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: in
     d["_scaleStep"] = 1
     d["labelStart"] = label_start
     d["labelEnd"] = label_end
-    d["instruction"] = "Bitte geben Sie eine Einschätzung ab!"
+    d["instruction"] = ""
     d["_correctRange"] = {"_bottom": int(min_v), "_top": int(max_v)}
     d["_buttons"] = get_slider_button_object()
     d["_canShowFeedback"] = False

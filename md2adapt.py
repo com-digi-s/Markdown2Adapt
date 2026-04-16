@@ -8,24 +8,28 @@
 # Authoring rules (tolerant defaults):
 # - Course title: first H1 (#) or fallback to "Course".
 # - Pages: prefer H2. If none, subsequent H1s; if none, a synthetic page.
-#   SPECIAL CASE: If H2s start with "[block]" (e.g., "## [block] Intro"),
-#   those H2s are treated as BLOCKS under one synthetic page+article.
+# - Single-page block/component mode:
+#   - Explicit "[block]" markers on H2 still force H2 -> block mapping.
+#   - If H3 bodies look like components (MCQ/slider/matching), H2s are also
+#     treated as blocks automatically.
+#   - In front-matter driven course files (courseTitle / parentMenuTitle /
+#     pageTitle / articleTitle), a single H1 followed by H2/H3 structure is
+#     interpreted as: H1 = page/article title, H2 = blocks, H3 = components.
+#   - This also matches the bundled Markdown2Adapt sample: one H1, one H2,
+#     H3 components, and no H4 blocks.
 # - Articles: prefer H3 per page; if none, one synthetic article per page.
-#   In the "[block] at H2" case, we create one synthetic article for the page.
+#   In single-page block/component mode, we create one synthetic article.
 # - Blocks: prefer H4 within an article; otherwise split on ---/*** or one block.
-#   In the "[block] at H2" case, those H2s ARE the blocks. If no explicit
-#   "[block]" tags exist but H3s look like components (MCQ/slider), then
-#   every H2 is treated as a block (auto-component mode).
+#   In single-page block/component mode, H2s are the blocks.
 # - Components:
-#   • Default: 1 TEXT component per block (safe fallback).
-#   • In "[block] at H2" or auto-component mode: each H3 inside a block becomes a component:
-#       [text] -> text component
-#       [mcq]  -> mcq component (options parsed from list items with [ ] / [x])
-#       [slider] -> slider component (parsed from "scale: a..b", "labelStart:", "labelEnd:")
-#     If no explicit marker is present, we auto-detect:
-#       - MCQ if the body contains lines like "- [ ] ..." or "[x] ..."
-#       - Slider if the body contains "scale: a..b" and/or "labelStart/labelEnd"
-#     Unrecognized markers fall back to TEXT.
+#   - Default: 1 TEXT component per block (safe fallback).
+#   - In single-page block/component mode: each H3 inside a block becomes a
+#     component. Explicit heading markers remain optional compatibility hints.
+#   - Without a heading marker, component type is inferred from the body:
+#       - MCQ: lines like "- [ ] ..." or "[x] ..."
+#       - Slider: "scale: a..b" and/or "labelStart"/"labelEnd"
+#       - Matching: a line containing "Type: Matching"
+#     Anything else falls back to TEXT.
 #
 # Optional simple front-matter (before the first Markdown heading):
 #   parentMenuTitle: "Anwenden"
@@ -243,7 +247,8 @@ def menu_template(_id: str, title: str) -> Dict[str, Any]:
         "_id": _id,
         "_parentId": "course",
         "title": title,
-        "displayTitle": title
+        "displayTitle": title,
+        "linkText": "View"
     }
 
 def page_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
@@ -252,7 +257,8 @@ def page_template(_id: str, parent_id: str, title: str) -> Dict[str, Any]:
         "_id": _id,
         "_parentId": parent_id,
         "title": title,
-        "displayTitle": title
+        "displayTitle": title,
+        "linkText": "View"
     }
 
 def article_template(_id: str, parent_id: str, title: str, body: str, assessment_id: int) -> Dict[str, Any]:
@@ -640,6 +646,9 @@ def _looks_like_matching(md: str) -> bool:
             return True
     return False
 
+def _looks_like_component(md: str) -> bool:
+    return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md)
+
 # -------- Tiny front-matter (optional) --------
 def _extract_meta_titles(md: str) -> dict:
     """
@@ -685,6 +694,51 @@ def _get_all_h2_sections(sections: List[Section], total_lines: int) -> List[Sect
         result.append(Section(level=2, title=s.title, start=s.start, end=end))
     return result
 
+def _get_h3_sections_within_h2(sections: List[Section], h2_sections: List[Section], total_lines: int) -> List[Section]:
+    h3s = [s for s in sections if s.level == 3]
+    nested: List[Section] = []
+    for h3 in h3s:
+        for h2 in h2_sections:
+            h2_end = h2.end if h2.end is not None else total_lines
+            if h2.start < h3.start < h2_end:
+                nested.append(h3)
+                break
+    return nested
+
+def _has_front_matter_block_structure(md: str, h1s: List[Section], h2_sections: List[Section], nested_h3s: List[Section], sections: List[Section]) -> bool:
+    if len(h1s) != 1 or not h2_sections or not nested_h3s:
+        return False
+    if any(s.level == 4 for s in sections):
+        return False
+    meta = _extract_meta_titles(md)
+    return any(key in meta for key in ("courseTitle", "parentMenuTitle", "pageTitle", "articleTitle"))
+
+def _matches_sample_block_structure(h1s: List[Section], h2_sections: List[Section], nested_h3s: List[Section], sections: List[Section]) -> bool:
+    if len(h1s) != 1 or len(h2_sections) != 1 or not nested_h3s:
+        return False
+    return not any(s.level == 4 for s in sections)
+
+def _should_use_h2_blocks(md: str, sections: List[Section], total_lines: int) -> bool:
+    h2_sections = _get_all_h2_sections(sections, total_lines)
+    if not h2_sections:
+        return False
+    if any(split_marker(s.title)[0] == "block" for s in h2_sections):
+        return True
+
+    nested_h3s = _get_h3_sections_within_h2(sections, h2_sections, total_lines)
+    if not nested_h3s:
+        return False
+
+    for h3 in nested_h3s:
+        if _looks_like_component(slice_text(md, h3.start, h3.end)):
+            return True
+
+    h1s = [s for s in sections if s.level == 1]
+    if _has_front_matter_block_structure(md, h1s, h2_sections, nested_h3s, sections):
+        return True
+
+    return _matches_sample_block_structure(h1s, h2_sections, nested_h3s, sections)
+
 def get_section_body(md: str, section: Section, sections: list[Section]) -> str:
     lines = md.splitlines()
     start = section.start + 1
@@ -711,16 +765,10 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict]
     menu_id = ids.new()
     menu = menu_template(menu_id, menu_title or "Menu")
 
-    # Detect explicit "[block]" tags at H2 AND/OR auto-component mode (MCQ/slider heuristics in H3s).
+    # Detect whether this document should be interpreted as:
+    # H1 = page/article title, H2 = blocks, H3 = components.
     h2_has_block_tags = any(s.level == 2 and split_marker(s.title)[0] == "block" for s in sections)
-    any_component_h3 = False
-    for s in sections:
-        if s.level == 3:
-            chunk = slice_text(md, s.start, s.end)
-            if _looks_like_mcq(chunk) or _looks_like_slider(chunk):
-                any_component_h3 = True
-                break
-    has_block_h2 = h2_has_block_tags or any_component_h3
+    has_block_h2 = _should_use_h2_blocks(md, sections, total_lines)
 
     # Pages
     if has_block_h2:

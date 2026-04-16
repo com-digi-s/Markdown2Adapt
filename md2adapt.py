@@ -972,6 +972,8 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
     - Remote URLs in plain [text](http...) links are left untouched.
     """
     import shutil
+    DOWNLOAD_USER_AGENT = "md2adapt (https://github.com/com-digi-s/Markdown2Adapt)"
+    TIMEOUT_SECONDS = 10
 
     out_base = Path(out_base).resolve()
 
@@ -997,7 +999,7 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path) -> str:
             filename = src.split("/")[-1].split("?")[0]
             local_path = dest_dir / filename
             if is_remote:
-                response = requests.get(src)
+                response = requests.get(src, headers={"User-Agent": DOWNLOAD_USER_AGENT}, timeout=TIMEOUT_SECONDS)
                 response.raise_for_status()
                 with open(local_path, "wb") as f:
                     f.write(response.content)

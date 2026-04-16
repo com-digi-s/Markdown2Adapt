@@ -996,8 +996,8 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path, debug: bool|in
         except ValueError:
             return str(subdir)
 
-    img_dir   = out_base / "resources" / "images"
-    asset_dir = out_base / "resources" / "assets"
+    img_dir   = out_base / "src" / "course" / "assets"
+    asset_dir = out_base / "src" / "course" / "assets"
     img_url   = _url_base(img_dir)
     asset_url = _url_base(asset_dir)
 
@@ -1024,7 +1024,9 @@ def swap_asset_links(markdown: str, out_base: Path, md_dir: Path, debug: bool|in
                 if debug and debug > 1:
                     print(f"  Copying local asset: {src_path} → {local_path}")
                 shutil.copy2(src_path, local_path)
-            return f"{url_base}/{filename_safe}"
+
+            rel_path = os.path.relpath(local_path, out_base) # make path relative to course root for URL
+            return str(rel_path).replace(os.sep, "/")  # Use forward slashes for URLs
         except Exception as e:
             print(f"Warning: Failed to process asset {src}: {e}", file=sys.stderr)
             return None

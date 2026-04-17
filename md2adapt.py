@@ -754,11 +754,13 @@ def _looks_like_accordion(md: str) -> bool:
                for ln in md.strip().splitlines())
 
 
-def parse_accordion_chunk(md: str) -> List[Dict[str, str]]:
-    """Return list of {title, body} dicts for each **Bold Title** / body pair."""
+def parse_accordion_chunk(md: str) -> Tuple[str, List[Dict[str, str]]]:
+    """Return (preamble_md, items) where preamble is text before the first
+    **Bold Title** and items are {title, body} dicts for each accordion entry."""
     items: List[Dict[str, str]] = []
     current_title: Optional[str] = None
     body_lines: List[str] = []
+    preamble_lines: List[str] = []
 
     for ln in md.strip().splitlines():
         if re.match(r"^\s*Type\s*:\s*Accordion\s*$", ln, re.IGNORECASE):
@@ -772,21 +774,24 @@ def parse_accordion_chunk(md: str) -> List[Dict[str, str]]:
         else:
             if current_title is not None:
                 body_lines.append(ln)
+            else:
+                preamble_lines.append(ln)
 
     if current_title is not None:
         items.append({"title": current_title, "body": md_to_html("\n".join(body_lines).strip())})
 
-    return items
+    return "\n".join(preamble_lines).strip(), items
 
 
 def accordion_component(
     _id: str,
     parent_id: str,
     title: str,
+    preamble: str,
     items: List[Dict[str, str]],
 ) -> Dict[str, Any]:
     d = component_common(_id, parent_id, "accordion", title)
-    d["body"] = ""
+    d["body"] = md_to_html(preamble) if preamble else ""
     d["instruction"] = ""
     d["_items"] = [
         {
@@ -821,9 +826,9 @@ def _dispatch_component(comp_id: str, block_id: str, title: str, chunk: str) -> 
         prompt_html, placeholder, feedback = parse_reflection_chunk(chunk)
         return reflection_component(comp_id, block_id, title, prompt_html, placeholder, feedback)
     elif _looks_like_accordion(chunk):
-        acc_items = parse_accordion_chunk(chunk)
+        preamble, acc_items = parse_accordion_chunk(chunk)
         if acc_items:
-            return accordion_component(comp_id, block_id, title, acc_items)
+            return accordion_component(comp_id, block_id, title, preamble, acc_items)
     return text_component(comp_id, block_id, title, chunk)
 
 

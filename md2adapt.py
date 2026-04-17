@@ -500,9 +500,9 @@ def mcq_component(
     return d
 
 
-def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: int, label_start: str, label_end: str) -> Dict[str, Any]:
+def slider_component(_id: str, parent_id: str, title: str, min_v: int, max_v: int, label_start: str, label_end: str, body: str = "") -> Dict[str, Any]:
     d = component_common(_id, parent_id, "slider", title)
-    d["body"] = ""
+    d["body"] = md_to_html(body) if body else ""
     d["_scaleStart"] = int(min_v)
     d["_scaleEnd"] = int(max_v)
     d["_scaleStep"] = 1
@@ -651,9 +651,10 @@ SL_SCALE_RE = re.compile(r"^\s*scale\s*:\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*$", re.IGN
 SL_LABEL_RE = re.compile(r'^\s*(labelStart|labelEnd)\s*:\s*"(.*)"\s*$', re.IGNORECASE)
 
 
-def parse_slider_chunk(md: str) -> Tuple[int, int, str, str]:
+def parse_slider_chunk(md: str) -> Tuple[int, int, str, str, str]:
     min_v, max_v = 1, 10
     label_start, label_end = "1", "10"
+    preamble_lines: List[str] = []
     for ln in md.strip().splitlines():
         m = SL_SCALE_RE.match(ln)
         if m:
@@ -666,7 +667,10 @@ def parse_slider_chunk(md: str) -> Tuple[int, int, str, str]:
                 label_start = val
             else:
                 label_end = val
-    return min_v, max_v, label_start, label_end
+            continue
+        if ln.strip():
+            preamble_lines.append(ln)
+    return min_v, max_v, label_start, label_end, "\n".join(preamble_lines).strip()
 
 
 def parse_matching_chunk(md: str) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
@@ -676,6 +680,7 @@ def parse_matching_chunk(md: str) -> Tuple[str, List[Dict[str, Any]], Optional[s
     items: List[Dict[str, Any]] = []
     current_question: Optional[str] = None
     current_options: List[Dict[str, Any]] = []
+    saw_question = False
 
     for ln in lines:
         stripped = ln.strip()
@@ -693,11 +698,14 @@ def parse_matching_chunk(md: str) -> Tuple[str, List[Dict[str, Any]], Optional[s
                 items.append({"text": current_question, "_options": current_options})
             current_question = m_q.group(1).strip()
             current_options = []
+            saw_question = True
             continue
         m_opt = re.match(r"^[ \t]+[-*+] \[(x| )\]\s*(.+)", ln)
         if m_opt and current_question is not None:
             current_options.append({"text": m_opt.group(2).strip(), "_isCorrect": m_opt.group(1).lower() == "x"})
             continue
+        if not saw_question and stripped:
+            instruction_lines.append(ln)
 
     if current_question is not None and current_options:
         items.append({"text": current_question, "_options": current_options})
@@ -816,8 +824,8 @@ def _dispatch_component(comp_id: str, block_id: str, title: str, chunk: str) -> 
         if items:
             return mcq_component(comp_id, block_id, title, instr_html, items, feedback)
     elif _looks_like_slider(chunk):
-        min_v, max_v, lstart, lend = parse_slider_chunk(chunk)
-        return slider_component(comp_id, block_id, title, min_v, max_v, lstart, lend)
+        min_v, max_v, lstart, lend, body = parse_slider_chunk(chunk)
+        return slider_component(comp_id, block_id, title, min_v, max_v, lstart, lend, body)
     elif _looks_like_matching(chunk):
         instr_html, items, feedback = parse_matching_chunk(chunk)
         if items:

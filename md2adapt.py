@@ -461,12 +461,13 @@ def mcq_component(
     _id: str,
     parent_id: str,
     title: str,
+    body_html: str,
     instruction_html: str,
     items: List[Tuple[str, bool]],
     feedback: Optional[str] = None,
 ) -> Dict[str, Any]:
     d = component_common(_id, parent_id, "mcq", title)
-    d["body"] = ""
+    d["body"] = body_html or ""
     d["instruction"] = instruction_html or ""
     defaults = {"_isPartlyCorrect": False, "feedback": ""}
     d["_items"] = [dict(text=t, _shouldBeSelected=ok, **defaults) for t, ok in items]
@@ -607,8 +608,14 @@ INSTR_RES = [
 ]
 
 
-def parse_mcq_chunk(md: str) -> Tuple[str, List[Tuple[str, bool]], Optional[str]]:
+def parse_mcq_chunk(md: str) -> Tuple[str, str, List[Tuple[str, bool]], Optional[str]]:
+    """Return (body_html, instruction_html, items, feedback).
+
+    Free text before the options → body (same styling as other components).
+    Explicit Instruction:/Anweisung: lines → instruction (short prompt field).
+    """
     lines = [ln.rstrip() for ln in md.strip().splitlines()]
+    body_lines: List[str] = []
     instruction_lines: List[str] = []
     items: List[Tuple[str, bool]] = []
     feedback: Optional[str] = None
@@ -632,19 +639,19 @@ def parse_mcq_chunk(md: str) -> Tuple[str, List[Tuple[str, bool]], Optional[str]
             continue
 
         if not saw_option:
+            instr_matched = False
             for ri in INSTR_RES:
                 mi = ri.match(ln)
                 if mi:
                     instruction_lines.append(mi.group(1).strip())
-                    matched = True
+                    instr_matched = True
                     break
-            if matched:
-                continue
-            if stripped:
-                instruction_lines.append(ln)
+            if not instr_matched and stripped:
+                body_lines.append(ln)
 
+    body_html = md_to_html("\n".join(body_lines)) if body_lines else ""
     instruction_html = md_to_html("\n".join(instruction_lines)) if instruction_lines else ""
-    return instruction_html, items, feedback
+    return body_html, instruction_html, items, feedback
 
 
 SL_SCALE_RE = re.compile(r"^\s*scale\s*:\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*$", re.IGNORECASE)
@@ -820,9 +827,9 @@ def _looks_like_component(md: str) -> bool:
 def _dispatch_component(comp_id: str, block_id: str, title: str, chunk: str) -> Dict[str, Any]:
     """Return the right component object based on chunk content."""
     if _looks_like_mcq(chunk):
-        instr_html, items, feedback = parse_mcq_chunk(chunk)
+        body_html, instr_html, items, feedback = parse_mcq_chunk(chunk)
         if items:
-            return mcq_component(comp_id, block_id, title, instr_html, items, feedback)
+            return mcq_component(comp_id, block_id, title, body_html, instr_html, items, feedback)
     elif _looks_like_slider(chunk):
         min_v, max_v, lstart, lend, body = parse_slider_chunk(chunk)
         return slider_component(comp_id, block_id, title, min_v, max_v, lstart, lend, body)

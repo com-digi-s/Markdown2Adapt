@@ -731,25 +731,40 @@ def _looks_like_reflection(md: str) -> bool:
 
 
 def parse_reflection_chunk(md: str) -> Tuple[str, str, Optional[str]]:
-    """Return (prompt_html, placeholder, feedback_or_None)."""
+    """Return (prompt_html, placeholder, feedback_html_or_None).
+
+    Feedback: may be followed by additional indented/continuation lines
+    until the end of the chunk or another directive, allowing multi-line
+    model answers.
+    """
     lines = md.strip().splitlines()
     prompt_lines: List[str] = []
+    feedback_lines: List[str] = []
     placeholder = "Write your thoughts here…"
-    feedback: Optional[str] = None
+    in_feedback = False
     for ln in lines:
         if re.match(r"^\s*Type\s*:\s*Reflection\s*$", ln, re.IGNORECASE):
+            in_feedback = False
             continue
         m = re.match(r"^\s*Placeholder\s*:\s*(.+)$", ln, re.IGNORECASE)
         if m:
+            in_feedback = False
             placeholder = m.group(1).strip().strip('"')
             continue
-        m = re.match(r"^\s*Feedback\s*:\s*(.+)$", ln, re.IGNORECASE)
+        m = re.match(r"^\s*Feedback\s*:\s*(.*)$", ln, re.IGNORECASE)
         if m:
-            feedback = m.group(1).strip()
+            in_feedback = True
+            first = m.group(1).strip()
+            if first:
+                feedback_lines.append(first)
             continue
-        prompt_lines.append(ln)
+        if in_feedback:
+            feedback_lines.append(ln)
+        else:
+            prompt_lines.append(ln)
     prompt_html = md_to_html("\n".join(prompt_lines)) if prompt_lines else ""
-    return prompt_html, placeholder, feedback
+    feedback_html = md_to_html("\n".join(feedback_lines)) if feedback_lines else None
+    return prompt_html, placeholder, feedback_html
 
 
 def _looks_like_mcq(md: str) -> bool:

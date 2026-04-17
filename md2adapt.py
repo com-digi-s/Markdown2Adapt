@@ -60,10 +60,11 @@ def md_to_html(md: str) -> str:
             out.append(f"<h{level}>{inline_md(heading.group(2).strip())}</h{level}>")
             i += 1
             continue
-        if re.match(r"^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$", line):
-            m = re.match(r"^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$", line)
-            assert m is not None
-            out.append(render_image_html(m.group(2), m.group(1), block=True))
+        stripped = line.strip()
+        img = _parse_markdown_image_at(stripped, 0)
+        if img is not None and img[3] == len(stripped):
+            alt, src, title, _ = img
+            out.append(render_image_html(src, alt, block=True, title=title))
             i += 1
             continue
         fence = FENCE_RE.match(line)
@@ -137,7 +138,7 @@ def md_to_html(md: str) -> str:
 
 
 def inline_md(text: str) -> str:
-    text = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', lambda m: render_image_html(m.group(2), m.group(1)), text)
+    text = _replace_inline_markdown_images(text)
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
@@ -163,15 +164,81 @@ def inline_md(text: str) -> str:
     return text
 
 
-def render_image_html(src: str, alt: str, block: bool = False) -> str:
+def _strip_markdown_title_wrapper(title: str) -> str:
+    title = title.strip()
+    if len(title) >= 2:
+        if title[0] == title[-1] and title[0] in ('"', "'"):
+            return title[1:-1]
+        if title[0] == "(" and title[-1] == ")":
+            return title[1:-1]
+    return title
+
+
+def _parse_markdown_image_at(text: str, start: int = 0) -> Optional[Tuple[str, str, str, int]]:
+    """
+    Parse ![alt](dest "title") starting at `start`.
+    Returns (alt, dest, title, end_index) or None.
+    """
+    if not text.startswith("![", start):
+        return None
+
+    label_open = start + 1  # points at '['
+    label_end = _find_matching(text, label_open, "[", "]")
+    if label_end == -1:
+        return None
+
+    after_label = label_end + 1
+    parsed = _parse_inline_destination(text, after_label)
+    if parsed is None:
+        return None
+
+    dest, title_token, end = parsed
+    alt = text[label_open + 1 : label_end]
+    title = _strip_markdown_title_wrapper(title_token) if title_token else ""
+    return alt, dest, title, end
+
+
+def _replace_inline_markdown_images(text: str) -> str:
+    out: List[str] = []
+    i = 0
+    in_code = False
+
+    while i < len(text):
+        ch = text[i]
+
+        if ch == "`":
+            in_code = not in_code
+            out.append(ch)
+            i += 1
+            continue
+
+        if not in_code:
+            parsed = _parse_markdown_image_at(text, i)
+            if parsed is not None:
+                alt, src, title, end = parsed
+                out.append(render_image_html(src, alt, title=title))
+                i = end
+                continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
+def render_image_html(src: str, alt: str, block: bool = False, title: Optional[str] = None) -> str:
     safe_src = html.escape(src, quote=True)
     safe_alt = html.escape(alt.strip(), quote=True)
+    safe_title = html.escape((title or alt).strip(), quote=True)
+
+    title_attr = f' title="{safe_title}"' if safe_title else ""
     img = (
-        f'<img src="{safe_src}" alt="{safe_alt}" title="{safe_alt}" '
+        f'<img src="{safe_src}" alt="{safe_alt}"{title_attr} '
         f'class="md-image{" md-image--block" if block else ""}" style="max-width:100%">'
     )
     if not block:
         return img
+
     caption = ""
     if safe_alt:
         caption = (

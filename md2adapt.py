@@ -192,14 +192,13 @@ def extract_first_image(md: str) -> Tuple[str, Optional[Tuple[str, str]]]:
 
 
 def build_hero_markdown(title: str, image: Optional[Tuple[str, str]]) -> str:
-    if not image:
-        return ""
     parts: List[str] = []
     clean_title = title.strip()
     if clean_title:
         parts.append(f"# {clean_title}")
-    alt, src = image
-    parts.append(f"![{alt}]({src})")
+    if image:
+        alt, src = image
+        parts.append(f"![{alt}]({src})")
     return "\n\n".join(parts).strip()
 
 

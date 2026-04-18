@@ -137,7 +137,7 @@ def md_to_html(md: str) -> str:
             para.append(lines[i].rstrip())
             i += 1
         out.append("<p>" + inline_md(" ".join(para).strip()) + "</p>")
-    return "".join(out)
+    return "".join(_group_narrow_images(out))
 
 
 def inline_md(text: str) -> str:
@@ -266,6 +266,54 @@ def render_image_html(src: str, alt: str, block: bool = False, title: Optional[s
             "</figcaption>"
         )
     return f'<figure class="md-image-figure" style="{figure_style}">' + img + caption + "</figure>"
+
+
+_NARROW_FIGURE_RE = re.compile(
+    r'<figure\b[^>]*\bstyle="[^"]*width:(\d+(?:\.\d+)?)(px|%|em|rem)'
+)
+_NARROW_THRESHOLDS: Dict[str, float] = {"%": 50, "px": 400, "em": 25, "rem": 25}
+
+
+def _chunk_is_narrow_figure(chunk: str) -> bool:
+    m = _NARROW_FIGURE_RE.search(chunk)
+    if not m:
+        return False
+    value, unit = float(m.group(1)), m.group(2)
+    return value < _NARROW_THRESHOLDS.get(unit, 50)
+
+
+def _group_narrow_images(chunks: List[str]) -> List[str]:
+    narrow_idx = next((i for i, c in enumerate(chunks) if _chunk_is_narrow_figure(c)), None)
+    if narrow_idx is None:
+        return chunks
+
+    figure = chunks[narrow_idx].replace("margin:1rem 0;", "margin:0;")
+    before = chunks[:narrow_idx]
+    after = chunks[narrow_idx + 1:]
+
+    row_style = "display:flex;align-items:flex-start;gap:1.5rem;margin:1rem 0;"
+    content_style = "flex:1;min-width:0;"
+
+    if before:
+        # image after content → image on right, content on left
+        before_html = "".join(before)
+        row = (
+            f'<div class="md-image-row" style="{row_style}">'
+            f'<div style="{content_style}">{before_html}</div>'
+            f"{figure}</div>"
+        )
+        return [row] + list(after)
+    elif after:
+        # image before content → image on left, content on right
+        after_html = "".join(after)
+        row = (
+            f'<div class="md-image-row" style="{row_style}">'
+            f"{figure}"
+            f'<div style="{content_style}">{after_html}</div></div>'
+        )
+        return [row]
+    else:
+        return [chunks[narrow_idx]]
 
 
 def extract_first_image(md: str) -> Tuple[str, Optional[Tuple[str, str]]]:

@@ -21,6 +21,7 @@ several correctness issues:
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import html
 import json
@@ -232,9 +233,10 @@ def render_image_html(src: str, alt: str, block: bool = False, title: Optional[s
     safe_title = html.escape((title or alt).strip(), quote=True)
 
     title_attr = f' title="{safe_title}"' if safe_title else ""
+    style = "width:80%;max-width:80%;height:auto" if block else "max-width:80%;height:auto"
     img = (
         f'<img src="{safe_src}" alt="{safe_alt}"{title_attr} '
-        f'class="md-image{" md-image--block" if block else ""}" style="max-width:100%">'
+        f'class="md-image{" md-image--block" if block else ""}" style="{style}">'
     )
     if not block:
         return img
@@ -599,7 +601,7 @@ def matching_component(
     d["_shouldDisplayAttempts"] = False
     d["_shouldResetAllAnswers"] = True
     d["_isRandom"] = False
-    d["_isRandomQuestionOrder"] = False
+    d["_isRandomQuestionOrder"] = True
     d["_questionWeight"] = 1
     d["_canShowModelAnswer"] = True
     d["_canShowCorrectness"] = False
@@ -673,26 +675,100 @@ INSTR_RES = [
     re.compile(r"^\s*(?:\*\*)?\s*Instruction\s*:\s*(.*)$", re.IGNORECASE),
     re.compile(r"^\s*(?:\*\*)?\s*Anweisung\s*:\s*(.*)$", re.IGNORECASE),
 ]
+COMPONENT_METADATA_RE = re.compile(r"^\s*(?P<key>[_A-Za-z][\w]*)\s*:\s*(?P<value>.+?)\s*$")
+LEGACY_COMPONENT_OPTION_RE = re.compile(r"^\s*(?P<key>_[A-Za-z][\w]*)\s*=\s*(?P<value>.+?)\s*$")
+PLACEHOLDER_RE = re.compile(r"^\s*Placeholder\s*:\s*(.+)$", re.IGNORECASE)
+COMPONENT_METADATA_KEY_MAP = {
+    "type": "type",
+    "instruction": "instruction",
+    "anweisung": "instruction",
+    "feedback": "feedback",
+    "placeholder": "placeholder",
+    "scale": "scale",
+    "labelstart": "labelStart",
+    "labelend": "labelEnd",
+}
 
 
-def parse_mcq_chunk(md: str) -> Tuple[str, str, List[Tuple[str, bool]], Optional[str]]:
+def _parse_component_option_value(raw: str) -> Any:
+    text = raw.strip().rstrip(",")
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in ("null", "none"):
+        return None
+
+    for parser in (ast.literal_eval, json.loads):
+        try:
+            return parser(text)
+        except (ValueError, SyntaxError, json.JSONDecodeError, TypeError):
+            pass
+
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        return text[1:-1]
+    return text
+
+
+def _normalize_component_metadata_key(key: str) -> Optional[str]:
+    if key.startswith("_"):
+        return key
+    return COMPONENT_METADATA_KEY_MAP.get(key.lower())
+
+
+def extract_component_metadata(md: str) -> Tuple[str, Dict[str, Any]]:
+    metadata: Dict[str, Any] = {}
+    kept_lines: List[str] = []
+
+    for line in md.splitlines():
+        candidate = line.strip()
+        if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in ('"', "'"):
+            candidate = candidate[1:-1].strip()
+        key: Optional[str] = None
+        value: Optional[str] = None
+        match = COMPONENT_METADATA_RE.match(candidate)
+        if match:
+            key = _normalize_component_metadata_key(match.group("key"))
+            value = match.group("value")
+        elif candidate.startswith("_"):
+            legacy = LEGACY_COMPONENT_OPTION_RE.match(candidate)
+            if legacy:
+                key = legacy.group("key")
+                value = legacy.group("value")
+        if key is not None and value is not None:
+            parsed = _parse_component_option_value(value)
+            if key in ("instruction", "feedback") and key in metadata and metadata[key]:
+                metadata[key] = f"{metadata[key]}\n{parsed}"
+            else:
+                metadata[key] = parsed
+            continue
+        kept_lines.append(line)
+
+    return "\n".join(kept_lines), metadata
+
+
+def parse_mcq_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[Tuple[str, bool]], Optional[str]]:
     """Return (body_html, instruction_html, items, feedback).
 
     Free text before the options → body (same styling as other components).
     Explicit Instruction:/Anweisung: lines → instruction (short prompt field).
     """
+    if metadata is None:
+        md, metadata = extract_component_metadata(md)
     lines = [ln.rstrip() for ln in md.strip().splitlines()]
     body_lines: List[str] = []
     instruction_lines: List[str] = []
     items: List[Tuple[str, bool]] = []
-    feedback: Optional[str] = None
+    feedback = str(metadata.get("feedback")).strip() if metadata.get("feedback") is not None else None
     saw_option = False
+
+    instruction_value = metadata.get("instruction")
+    if instruction_value not in (None, ""):
+        instruction_lines.append(str(instruction_value).strip())
 
     for ln in lines:
         stripped = ln.strip()
-        if stripped.lower().startswith("feedback:"):
-            feedback = stripped[len("feedback:") :].strip()
-            continue
 
         matched = False
         for rx in MCQ_OPT_RES:
@@ -705,16 +781,8 @@ def parse_mcq_chunk(md: str) -> Tuple[str, str, List[Tuple[str, bool]], Optional
         if matched:
             continue
 
-        if not saw_option:
-            instr_matched = False
-            for ri in INSTR_RES:
-                mi = ri.match(ln)
-                if mi:
-                    instruction_lines.append(mi.group(1).strip())
-                    instr_matched = True
-                    break
-            if not instr_matched and stripped:
-                body_lines.append(ln)
+        if not saw_option and stripped:
+            body_lines.append(ln)
 
     body_html = md_to_html("\n".join(body_lines)) if body_lines else ""
     instruction_html = md_to_html("\n".join(instruction_lines)) if instruction_lines else ""
@@ -725,9 +793,27 @@ SL_SCALE_RE = re.compile(r"^\s*scale\s*:\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*$", re.IGN
 SL_LABEL_RE = re.compile(r'^\s*(labelStart|labelEnd)\s*:\s*"(.*)"\s*$', re.IGNORECASE)
 
 
-def parse_slider_chunk(md: str) -> Tuple[int, int, str, str, str]:
+def _parse_scale_bounds(value: Any) -> Optional[Tuple[int, int]]:
+    match = re.match(r"^\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*$", str(value))
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def parse_slider_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple[int, int, str, str, str]:
+    if metadata is None:
+        md, metadata = extract_component_metadata(md)
     min_v, max_v = 1, 10
     label_start, label_end = "1", "10"
+    scale_value = metadata.get("scale")
+    if scale_value is not None:
+        parsed = _parse_scale_bounds(scale_value)
+        if parsed is not None:
+            min_v, max_v = parsed
+    if metadata.get("labelStart") not in (None, ""):
+        label_start = str(metadata["labelStart"])
+    if metadata.get("labelEnd") not in (None, ""):
+        label_end = str(metadata["labelEnd"])
     preamble_lines: List[str] = []
     for ln in md.strip().splitlines():
         m = SL_SCALE_RE.match(ln)
@@ -747,25 +833,23 @@ def parse_slider_chunk(md: str) -> Tuple[int, int, str, str, str]:
     return min_v, max_v, label_start, label_end, "\n".join(preamble_lines).strip()
 
 
-def parse_matching_chunk(md: str) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+def parse_matching_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+    if metadata is None:
+        md, metadata = extract_component_metadata(md)
     lines = md.splitlines()
     instruction_lines: List[str] = []
-    feedback: Optional[str] = None
+    feedback = str(metadata.get("feedback")).strip() if metadata.get("feedback") is not None else None
     items: List[Dict[str, Any]] = []
     current_question: Optional[str] = None
     current_options: List[Dict[str, Any]] = []
     saw_question = False
 
+    instruction_value = metadata.get("instruction")
+    if instruction_value not in (None, ""):
+        instruction_lines.append(str(instruction_value).strip())
+
     for ln in lines:
         stripped = ln.strip()
-        if stripped.lower().startswith("type:") and "matching" in stripped.lower():
-            continue
-        if stripped.lower().startswith("instruction:"):
-            instruction_lines.append(stripped[len("instruction:") :].strip())
-            continue
-        if stripped.lower().startswith("feedback:"):
-            feedback = stripped[len("feedback:") :].strip()
-            continue
         m_q = re.match(r"^-\s+(.+)$", ln)
         if m_q:
             if current_question is not None and current_options:
@@ -789,42 +873,37 @@ def parse_matching_chunk(md: str) -> Tuple[str, List[Dict[str, Any]], Optional[s
 
 
 def _looks_like_matching(md: str) -> bool:
-    return any(ln.strip().lower() == "type: matching" for ln in md.strip().splitlines())
+    md, metadata = extract_component_metadata(md)
+    explicit_type = str(metadata.get("type", "")).strip().lower()
+    if explicit_type == "matching":
+        return True
+    _, items, _ = parse_matching_chunk(md, metadata)
+    return bool(items)
 
 
 def _looks_like_reflection(md: str) -> bool:
-    return any(re.match(r"^\s*Type\s*:\s*Reflection\s*$", ln, re.IGNORECASE)
-               for ln in md.strip().splitlines())
+    md, metadata = extract_component_metadata(md)
+    explicit_type = str(metadata.get("type", "")).strip().lower()
+    if explicit_type == "reflection":
+        return True
+    return metadata.get("placeholder") is not None or any(PLACEHOLDER_RE.match(ln) for ln in md.strip().splitlines())
 
 
-def parse_reflection_chunk(md: str) -> Tuple[str, str, Optional[str]]:
+def parse_reflection_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str, Optional[str]]:
     """Return (prompt_html, placeholder, feedback_html_or_None).
 
     Feedback: may be followed by additional indented/continuation lines
     until the end of the chunk or another directive, allowing multi-line
     model answers.
     """
+    if metadata is None:
+        md, metadata = extract_component_metadata(md)
     lines = md.strip().splitlines()
     prompt_lines: List[str] = []
-    feedback_lines: List[str] = []
-    placeholder = "Write your thoughts here…"
+    feedback_lines: List[str] = [str(metadata["feedback"]).strip()] if metadata.get("feedback") not in (None, "") else []
+    placeholder = str(metadata["placeholder"]).strip() if metadata.get("placeholder") not in (None, "") else "Write your thoughts here…"
     in_feedback = False
     for ln in lines:
-        if re.match(r"^\s*Type\s*:\s*Reflection\s*$", ln, re.IGNORECASE):
-            in_feedback = False
-            continue
-        m = re.match(r"^\s*Placeholder\s*:\s*(.+)$", ln, re.IGNORECASE)
-        if m:
-            in_feedback = False
-            placeholder = m.group(1).strip().strip('"')
-            continue
-        m = re.match(r"^\s*Feedback\s*:\s*(.*)$", ln, re.IGNORECASE)
-        if m:
-            in_feedback = True
-            first = m.group(1).strip()
-            if first:
-                feedback_lines.append(first)
-            continue
         if in_feedback:
             feedback_lines.append(ln)
         else:
@@ -835,33 +914,47 @@ def parse_reflection_chunk(md: str) -> Tuple[str, str, Optional[str]]:
 
 
 def _looks_like_mcq(md: str) -> bool:
+    md, metadata = extract_component_metadata(md)
+    explicit_type = str(metadata.get("type", "")).strip().lower()
+    if explicit_type == "mcq":
+        return True
     if _looks_like_matching(md) or _looks_like_reflection(md):
         return False
     return any(rx.match(ln) for ln in md.strip().splitlines() for rx in MCQ_OPT_RES)
 
 
 def _looks_like_slider(md: str) -> bool:
+    md, metadata = extract_component_metadata(md)
+    explicit_type = str(metadata.get("type", "")).strip().lower()
+    if explicit_type == "slider":
+        return True
+    if metadata.get("scale") is not None:
+        return True
     return any(SL_SCALE_RE.match(ln) or SL_LABEL_RE.match(ln) for ln in md.strip().splitlines())
 
 
 _ACCORDION_ITEM_RE = re.compile(r"^\*\*(.+)\*\*\s*$")
 
 def _looks_like_accordion(md: str) -> bool:
-    return any(re.match(r"^\s*Type\s*:\s*Accordion\s*$", ln, re.IGNORECASE)
-               for ln in md.strip().splitlines())
+    md, metadata = extract_component_metadata(md)
+    explicit_type = str(metadata.get("type", "")).strip().lower()
+    if explicit_type == "accordion":
+        return True
+    _, items = parse_accordion_chunk(md, metadata)
+    return len(items) >= 2
 
 
-def parse_accordion_chunk(md: str) -> Tuple[str, List[Dict[str, str]]]:
+def parse_accordion_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, str]]]:
     """Return (preamble_md, items) where preamble is text before the first
     **Bold Title** and items are {title, body} dicts for each accordion entry."""
+    if metadata is None:
+        md, metadata = extract_component_metadata(md)
     items: List[Dict[str, str]] = []
     current_title: Optional[str] = None
     body_lines: List[str] = []
     preamble_lines: List[str] = []
 
     for ln in md.strip().splitlines():
-        if re.match(r"^\s*Type\s*:\s*Accordion\s*$", ln, re.IGNORECASE):
-            continue
         m = _ACCORDION_ITEM_RE.match(ln.strip())
         if m:
             if current_title is not None:
@@ -903,30 +996,48 @@ def accordion_component(
 
 
 def _looks_like_component(md: str) -> bool:
+    md, metadata = extract_component_metadata(md)
+    explicit_type = str(metadata.get("type", "")).strip().lower()
+    if explicit_type in {"mcq", "slider", "matching", "reflection", "accordion"}:
+        return True
     return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md) or _looks_like_reflection(md) or _looks_like_accordion(md)
 
 
 def _dispatch_component(comp_id: str, block_id: str, title: str, chunk: str) -> Dict[str, Any]:
     """Return the right component object based on chunk content."""
-    if _looks_like_mcq(chunk):
-        body_html, instr_html, items, feedback = parse_mcq_chunk(chunk)
+    chunk, component_metadata = extract_component_metadata(chunk)
+    explicit_type = str(component_metadata.get("type", "")).strip().lower()
+    if explicit_type == "mcq" or _looks_like_mcq(chunk):
+        body_html, instr_html, items, feedback = parse_mcq_chunk(chunk, component_metadata)
         if items:
-            return mcq_component(comp_id, block_id, title, body_html, instr_html, items, feedback)
-    elif _looks_like_slider(chunk):
-        min_v, max_v, lstart, lend, body = parse_slider_chunk(chunk)
-        return slider_component(comp_id, block_id, title, min_v, max_v, lstart, lend, body)
-    elif _looks_like_matching(chunk):
-        instr_html, items, feedback = parse_matching_chunk(chunk)
+            component = mcq_component(comp_id, block_id, title, body_html, instr_html, items, feedback)
+            component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
+            return component
+    elif explicit_type == "slider" or _looks_like_slider(chunk):
+        min_v, max_v, lstart, lend, body = parse_slider_chunk(chunk, component_metadata)
+        component = slider_component(comp_id, block_id, title, min_v, max_v, lstart, lend, body)
+        component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
+        return component
+    elif explicit_type == "matching" or _looks_like_matching(chunk):
+        instr_html, items, feedback = parse_matching_chunk(chunk, component_metadata)
         if items:
-            return matching_component(comp_id, block_id, title, instr_html, items, feedback)
-    elif _looks_like_reflection(chunk):
-        prompt_html, placeholder, feedback = parse_reflection_chunk(chunk)
-        return reflection_component(comp_id, block_id, title, prompt_html, placeholder, feedback)
-    elif _looks_like_accordion(chunk):
-        preamble, acc_items = parse_accordion_chunk(chunk)
+            component = matching_component(comp_id, block_id, title, instr_html, items, feedback)
+            component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
+            return component
+    elif explicit_type == "reflection" or _looks_like_reflection(chunk):
+        prompt_html, placeholder, feedback = parse_reflection_chunk(chunk, component_metadata)
+        component = reflection_component(comp_id, block_id, title, prompt_html, placeholder, feedback)
+        component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
+        return component
+    elif explicit_type == "accordion" or _looks_like_accordion(chunk):
+        preamble, acc_items = parse_accordion_chunk(chunk, component_metadata)
         if acc_items:
-            return accordion_component(comp_id, block_id, title, preamble, acc_items)
-    return text_component(comp_id, block_id, title, chunk)
+            component = accordion_component(comp_id, block_id, title, preamble, acc_items)
+            component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
+            return component
+    component = text_component(comp_id, block_id, title, chunk)
+    component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
+    return component
 
 
 # -------- Tiny front-matter (optional) --------

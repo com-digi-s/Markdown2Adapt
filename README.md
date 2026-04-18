@@ -62,3 +62,43 @@ Feedback: Only one answer is right.
 ```
 ![alt text](resources/img/feedback1.png)
 ![alt text](resources/img/feedback2.png)
+
+### Component metadata in Markdown
+
+Component chunks can include metadata lines in `key: value` syntax. These lines
+are removed from the rendered content and used to control parsing and the
+generated component JSON. Their position inside the component does not matter.
+
+Example:
+
+```Markdown
+### Match the items
+
+- Benutzerrechte
+_isRandom: False
+  - [x] Schlüssel und Zutrittsregeln
+  - [ ] Das Gebäude
+- Administratorrechte
+_isRandomQuestionOrder: True
+  - [x] Verwaltung und Freigaben
+  - [ ] Das Gebäude
+```
+
+Supported values include `True`/`False`, numbers, quoted strings, arrays, and
+objects. Underscore-prefixed Adapt options such as `_isRandom` use the same
+`key: value` syntax.
+
+### Component type inference
+
+Component types are inferred from the remaining syntax after metadata lines are
+removed:
+
+- MCQ: flat checklist answers like `* [x] ...`
+- Slider: `scale:` plus optional `labelStart:` / `labelEnd:`
+- Matching: top-level `- Question` items with nested `- [x] Answer` options
+- Reflection: `placeholder:` line
+- Accordion: repeated standalone `**Title**` item headings
+
+Explicit `type: matching`, `type: reflection`, `type: accordion`, `type: mcq`,
+and `type: slider` still work, but they are optional when the syntax is already
+distinctive.

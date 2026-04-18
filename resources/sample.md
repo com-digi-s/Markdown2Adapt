@@ -26,7 +26,7 @@ Alles in einer Textkomponente wird als Markdown gerendert.
 * [x] Python
 * [ ] CSS
 
-Feedback: HTML und CSS sind Auszeichnungssprachen, keine Programmiersprachen. Python ist objektorientiert.
+feedback: HTML und CSS sind Auszeichnungssprachen, keine Programmiersprachen. Python ist objektorientiert.
 
 ## Slider
 
@@ -39,17 +39,20 @@ labelEnd: "10 = sehr sicher"
 ## Matching
 
 ### Ordnen Sie die Hauptstädte den Ländern zu.
+instruction: Wählen Sie die richtige Hauptstadt für jedes Land.
+_isRandom: False
+_isRandomQuestionOrder: True
 
-Type: Matching
-Instruction: Wählen Sie die richtige Hauptstadt für jedes Land.
 - Frankreich
   - [x] Paris
   - [ ] Rom
   - [ ] Berlin
+
 - Deutschland
   - [ ] Paris
   - [ ] Rom
   - [x] Berlin
+
 - Italien
   - [ ] Paris
   - [x] Rom
@@ -59,15 +62,12 @@ Instruction: Wählen Sie die richtige Hauptstadt für jedes Land.
 
 ### Wie würden Sie das Gelernte in Ihrem Alltag anwenden?
 
-Type: Reflection
-Placeholder: "Schreiben Sie Ihre Gedanken hier..."
-Feedback: Vielen Dank für Ihre Reflexion!
+placeholder: "Schreiben Sie Ihre Gedanken hier..."
+feedback: Vielen Dank für Ihre Reflexion!
 
 ## Akkordeon
 
 ### Häufig gestellte Fragen
-
-Type: Accordion
 
 **Was ist der Unterschied zwischen Text und HTML?**
 Text ist reiner Inhalt ohne Formatierung. HTML fügt Struktur und Bedeutung hinzu, z. B. Überschriften, Absätze und Links.

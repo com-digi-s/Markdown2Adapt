@@ -12,6 +12,12 @@ Alles in einer Textkomponente wird als Markdown gerendert.
 - > Blockzitate funktionieren ebenfalls
 - Links wie [dieser hier](https://www.markdownguide.org/) werden unterstützt
 
+Bilder können mit einer benutzerdefinierten Breite eingebettet werden:
+
+![Beispielbild|300](https://via.placeholder.com/600x200)
+
+![Breites Bild|80%](https://via.placeholder.com/600x200)
+
 ## MCQ
 
 ### Wie viele Kontinente gibt es auf der Erde?

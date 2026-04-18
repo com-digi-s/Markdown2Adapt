@@ -39,6 +39,7 @@ HEX24_RE = re.compile(r"^[0-9a-f]{24}$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 MARKER_RE = re.compile(r"^\[(\w+)\]\s*(.*)$", re.IGNORECASE)
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_IMAGE_WIDTH_RE = re.compile(r"\|(\d+(?:%|px|em|rem)?)\s*$")
 FENCE_RE = re.compile(r"^\s*(```+|~~~+)")
 REFERENCE_DEF_RE = re.compile(
     r'^\s{0,3}\[([^\]]+)\]:\s*(?:<([^>]+)>|([^\s]+))(?:\s+("[^"]*"|\([^)]*\)|\'[^\']*\'))?\s*$'
@@ -65,7 +66,8 @@ def md_to_html(md: str) -> str:
         img = _parse_markdown_image_at(stripped, 0)
         if img is not None and img[3] == len(stripped):
             alt, src, title, _ = img
-            out.append(render_image_html(src, alt, block=True, title=title))
+            alt, width = _extract_width_from_alt(alt)
+            out.append(render_image_html(src, alt, block=True, title=title, width=width))
             i += 1
             continue
         fence = FENCE_RE.match(line)
@@ -217,7 +219,8 @@ def _replace_inline_markdown_images(text: str) -> str:
             parsed = _parse_markdown_image_at(text, i)
             if parsed is not None:
                 alt, src, title, end = parsed
-                out.append(render_image_html(src, alt, title=title))
+                alt, width = _extract_width_from_alt(alt)
+                out.append(render_image_html(src, alt, title=title, width=width))
                 i = end
                 continue
 
@@ -227,20 +230,33 @@ def _replace_inline_markdown_images(text: str) -> str:
     return "".join(out)
 
 
-def render_image_html(src: str, alt: str, block: bool = False, title: Optional[str] = None) -> str:
+def _extract_width_from_alt(alt: str) -> Tuple[str, Optional[str]]:
+    m = _IMAGE_WIDTH_RE.search(alt)
+    if not m:
+        return alt, None
+    width = m.group(1)
+    if width.isdigit():
+        width += "px"
+    return alt[: m.start()].rstrip(), width
+
+
+def render_image_html(src: str, alt: str, block: bool = False, title: Optional[str] = None, width: Optional[str] = None) -> str:
     safe_src = html.escape(src, quote=True)
     safe_alt = html.escape(alt.strip(), quote=True)
     safe_title = html.escape((title or alt).strip(), quote=True)
 
     title_attr = f' title="{safe_title}"' if safe_title else ""
-    style = "width:80%;max-width:80%;height:auto" if block else "max-width:80%;height:auto"
+    img_style = "width:100%;height:auto" if (block and width) else (
+        "width:80%;max-width:80%;height:auto" if block else "max-width:80%;height:auto"
+    )
     img = (
         f'<img src="{safe_src}" alt="{safe_alt}"{title_attr} '
-        f'class="md-image{" md-image--block" if block else ""}" style="{style}">'
+        f'class="md-image{" md-image--block" if block else ""}" style="{img_style}">'
     )
     if not block:
         return img
 
+    figure_style = f"margin:1rem 0;width:{width};" if width else "margin:1rem 0;"
     caption = ""
     if safe_alt:
         caption = (
@@ -249,7 +265,7 @@ def render_image_html(src: str, alt: str, block: bool = False, title: Optional[s
             f"{safe_alt}"
             "</figcaption>"
         )
-    return '<figure class="md-image-figure" style="margin:1rem 0;">' + img + caption + "</figure>"
+    return f'<figure class="md-image-figure" style="{figure_style}">' + img + caption + "</figure>"
 
 
 def extract_first_image(md: str) -> Tuple[str, Optional[Tuple[str, str]]]:

@@ -88,6 +88,20 @@ Supported values include `True`/`False`, numbers, quoted strings, arrays, and
 objects. Underscore-prefixed Adapt options such as `_isRandom` use the same
 `key: value` syntax.
 
+### Images with custom width
+
+Standard Markdown images are supported. To set a specific display width, append
+`|<width>` inside the alt text brackets:
+
+```Markdown
+![A diagram|300](diagram.png)
+![Chart|50%](chart.png)
+![Icon|2em](icon.png)
+```
+
+The number alone defaults to pixels (`300` → `300px`). Supported units: `px`,
+`%`, `em`, `rem`. The `|width` part is stripped from the visible caption.
+
 ### Component type inference
 
 Component types are inferred from the remaining syntax after metadata lines are

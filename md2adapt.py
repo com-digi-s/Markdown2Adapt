@@ -784,6 +784,7 @@ def _normalize_component_metadata_key(key: str) -> Optional[str]:
 def extract_component_metadata(md: str) -> Tuple[str, Dict[str, Any]]:
     metadata: Dict[str, Any] = {}
     kept_lines: List[str] = []
+    multiline_key: Optional[str] = None
 
     for line in md.splitlines():
         candidate = line.strip()
@@ -806,7 +807,12 @@ def extract_component_metadata(md: str) -> Tuple[str, Dict[str, Any]]:
                 metadata[key] = f"{metadata[key]}\n{parsed}"
             else:
                 metadata[key] = parsed
+            multiline_key = key if key == "feedback" else None
             continue
+        if multiline_key == "feedback":
+            metadata[multiline_key] = str(metadata[multiline_key]) + "\n" + line
+            continue
+        multiline_key = None
         kept_lines.append(line)
 
     return "\n".join(kept_lines), metadata
@@ -824,7 +830,8 @@ def parse_mcq_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple
     body_lines: List[str] = []
     instruction_lines: List[str] = []
     items: List[Tuple[str, bool]] = []
-    feedback = str(metadata.get("feedback")).strip() if metadata.get("feedback") is not None else None
+    raw_feedback = metadata.get("feedback")
+    feedback = md_to_html(str(raw_feedback).strip()) if raw_feedback is not None else None
     saw_option = False
 
     instruction_value = metadata.get("instruction")
@@ -902,7 +909,8 @@ def parse_matching_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> 
         md, metadata = extract_component_metadata(md)
     lines = md.splitlines()
     instruction_lines: List[str] = []
-    feedback = str(metadata.get("feedback")).strip() if metadata.get("feedback") is not None else None
+    raw_feedback = metadata.get("feedback")
+    feedback = md_to_html(str(raw_feedback).strip()) if raw_feedback is not None else None
     items: List[Dict[str, Any]] = []
     current_question: Optional[str] = None
     current_options: List[Dict[str, Any]] = []

@@ -256,7 +256,7 @@ def render_image_html(src: str, alt: str, block: bool = False, title: Optional[s
     if not block:
         return img
 
-    figure_style = f"margin:1rem 0;width:{width};" if width else "margin:1rem 0;"
+    figure_style = f"margin:1rem auto;width:{width} !important;max-width:100%;" if width else "margin:1rem 0;"
     caption = ""
     if safe_alt:
         caption = (
@@ -269,7 +269,7 @@ def render_image_html(src: str, alt: str, block: bool = False, title: Optional[s
 
 
 _NARROW_FIGURE_RE = re.compile(
-    r'<figure\b[^>]*\bstyle="[^"]*width:(\d+(?:\.\d+)?)(px|%|em|rem)'
+    r'<figure\b[^>]*\bstyle="[^"]*(?<!-)width:(\d+(?:\.\d+)?)(px|%|em|rem)'
 )
 _NARROW_THRESHOLDS: Dict[str, float] = {"%": 50, "px": 400, "em": 25, "rem": 25}
 
@@ -287,7 +287,18 @@ def _group_narrow_images(chunks: List[str]) -> List[str]:
     if narrow_idx is None:
         return chunks
 
-    figure = chunks[narrow_idx].replace("margin:1rem 0;", "margin:0;")
+    orig_figure = chunks[narrow_idx]
+    m = _NARROW_FIGURE_RE.search(orig_figure)
+    width_val = f"{m.group(1)}{m.group(2)}" if m else "40%"
+
+    # Use flex-basis instead of width so CSS `width:100%!important` on .md-image-figure
+    # doesn't override the layout (flex-basis takes precedence over width in flex context).
+    figure = re.sub(
+        r'(<figure\b[^>]*)\bstyle="[^"]*"',
+        lambda mo: mo.group(1) + f'style="flex:0 0 {width_val};max-width:{width_val};min-width:0;margin:0;"',
+        orig_figure,
+    )
+
     before = chunks[:narrow_idx]
     after = chunks[narrow_idx + 1:]
 
@@ -295,7 +306,7 @@ def _group_narrow_images(chunks: List[str]) -> List[str]:
     content_style = "flex:1;min-width:0;"
 
     if before:
-        # image after content → image on right, content on left
+        # text before image → image on right, text on left
         before_html = "".join(before)
         row = (
             f'<div class="md-image-row" style="{row_style}">'
@@ -304,7 +315,7 @@ def _group_narrow_images(chunks: List[str]) -> List[str]:
         )
         return [row] + list(after)
     elif after:
-        # image before content → image on left, content on right
+        # image before text → image on left, text on right
         after_html = "".join(after)
         row = (
             f'<div class="md-image-row" style="{row_style}">'
@@ -313,7 +324,7 @@ def _group_narrow_images(chunks: List[str]) -> List[str]:
         )
         return [row]
     else:
-        return [chunks[narrow_idx]]
+        return [orig_figure]
 
 
 def extract_first_image(md: str) -> Tuple[str, Optional[Tuple[str, str]]]:
@@ -324,11 +335,16 @@ def extract_first_image(md: str) -> Tuple[str, Optional[Tuple[str, str]]]:
     return updated_md, (match.group(1).strip(), match.group(2).strip())
 
 
-def build_hero_markdown(title: str, image: Optional[Tuple[str, str]]) -> str:
+def build_hero_markdown(
+    title: str, image: Optional[Tuple[str, str]], intro_markdown: str = ""
+) -> str:
     parts: List[str] = []
     clean_title = title.strip()
+    clean_intro = intro_markdown.strip()
     if clean_title:
         parts.append(f"# {clean_title}")
+    if clean_intro:
+        parts.append(clean_intro)
     if image:
         alt, src = image
         parts.append(f"![{alt}]({src})")
@@ -451,6 +467,17 @@ def course_template(
             "_isPercentageBased": is_percentage_based,
         },
         "_requireCompletionOf": -1,
+        "_bookmarking": {
+            "_isEnabled": True,
+            "_level": "block",
+            "_showPrompt": True,
+            "_title": "Fortschritt wiederherstellen",
+            "_body": "Möchten Sie dort weitermachen, wo Sie aufgehört haben?",
+            "_buttons": {
+                "_yes": {"buttonText": "Ja", "ariaLabel": "Ja"},
+                "_no": {"buttonText": "Nein, von vorne anfangen", "ariaLabel": "Nein, von vorne anfangen"},
+            },
+        },
         "_globals": {
             "_accessibility": {
                 "skipNavigationText": "Navigation überspringen",
@@ -1924,10 +1951,15 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict[
         for a_sec in a_heads:
             article_id = ids.new()
             article_text_body = get_section_intro(md, a_sec, sections, total_lines)
-            articles.append(article_template(article_id, page_id, a_sec.title, body=article_text_body))
+            article_body = "" if has_block_h2 else article_text_body
+            articles.append(article_template(article_id, page_id, a_sec.title, body=article_body))
 
             if not hero_emitted:
-                hero_markdown = build_hero_markdown(p_sec.title, hero_image)
+                hero_markdown = build_hero_markdown(
+                    p_sec.title,
+                    hero_image,
+                    article_text_body if has_block_h2 else "",
+                )
                 if hero_markdown:
                     hero_block_id = ids.new()
                     blocks.append(block_template(hero_block_id, article_id, tracking, "", body=""))

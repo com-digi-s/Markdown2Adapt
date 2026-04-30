@@ -1954,11 +1954,11 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict[
             article_body = "" if has_block_h2 else article_text_body
             articles.append(article_template(article_id, page_id, a_sec.title, body=article_body))
 
-            if not hero_emitted:
+            if has_block_h2 and not hero_emitted:
                 hero_markdown = build_hero_markdown(
                     p_sec.title,
                     hero_image,
-                    article_text_body if has_block_h2 else "",
+                    article_text_body,
                 )
                 if hero_markdown:
                     hero_block_id = ids.new()

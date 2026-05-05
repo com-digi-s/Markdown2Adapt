@@ -1962,12 +1962,22 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict[
                 )
                 if hero_markdown:
                     hero_block_id = ids.new()
-                    blocks.append(block_template(hero_block_id, article_id, tracking, "", body=""))
+
+                    hero_block = block_template(hero_block_id, article_id, tracking, p_sec.title, body="")
+                    hero_block["_classes"] = "md-hero-block"
+                    hero_block["_pageLevelProgress"] = {
+                        "_isEnabled": True,
+                        "_isCompletionIndicatorEnabled": True,
+                    }
+
+                    blocks.append(hero_block)
                     tracking += 1
+
                     hero_comp_id = ids.new()
                     hero_component = text_component(hero_comp_id, hero_block_id, "", hero_markdown)
                     hero_component["_classes"] = "md-hero-component"
                     components.append(hero_component)
+
                     hero_emitted = True
 
             if has_block_h2:

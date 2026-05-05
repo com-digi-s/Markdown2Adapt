@@ -6,7 +6,7 @@ Usage:
 
 This version keeps the original structure but hardens asset migration and fixes
 several correctness issues:
-- no third-party runtime dependencies
+- uses Python-Markdown when available, with a legacy fallback
 - deterministic asset naming without basename collisions
 - optional multi-root asset lookup via --asset-root, plus fallback moved-asset search
 - robuster inline/reference markdown link and image rewriting
@@ -35,18 +35,129 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
+try:
+    import markdown as _markdown
+except Exception:  # pragma: no cover - keeps the converter usable without optional deps
+    _markdown = None
+
 HEX24_RE = re.compile(r"^[0-9a-f]{24}$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 MARKER_RE = re.compile(r"^\[(\w+)\]\s*(.*)$", re.IGNORECASE)
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _IMAGE_WIDTH_RE = re.compile(r"\|(\d+(?:%|px|em|rem)?)\s*$")
 FENCE_RE = re.compile(r"^\s*(```+|~~~+)")
+LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)")
 REFERENCE_DEF_RE = re.compile(
     r'^\s{0,3}\[([^\]]+)\]:\s*(?:<([^>]+)>|([^\s]+))(?:\s+("[^"]*"|\([^)]*\)|\'[^\']*\'))?\s*$'
 )
 
-# -------- Minimal Markdown-to-HTML (safe default) --------
+# -------- Markdown-to-HTML --------
+def _insert_markdown_list_boundaries(lines: List[str]) -> List[str]:
+    out: List[str] = []
+    in_fence = False
+    fence_marker = ""
+
+    for line in lines:
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            out.append(line)
+            continue
+
+        if (
+            not in_fence
+            and LIST_MARKER_RE.match(line)
+            and out
+            and out[-1].strip()
+            and not LIST_MARKER_RE.match(out[-1])
+        ):
+            out.append("")
+
+        out.append(line)
+
+    return out
+
+
+def _preprocess_markdown_images_for_html(md: str) -> str:
+    """Render project-specific image width syntax before Python-Markdown runs."""
+    lines = md.strip().splitlines()
+    out: List[str] = []
+    in_fence = False
+    fence_marker = ""
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            out.append(line)
+            i += 1
+            continue
+
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        stripped = line.strip()
+        image_run = _parse_standalone_image_line(stripped)
+        if image_run is not None:
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j]
+                if not next_line.strip() or FENCE_RE.match(next_line):
+                    break
+                next_images = _parse_standalone_image_line(next_line.strip())
+                if next_images is None:
+                    break
+                image_run.extend(next_images)
+                j += 1
+
+            if len(image_run) > 1:
+                out.extend(["", render_image_row_html(image_run), ""])
+            else:
+                alt, src, title, width = image_run[0]
+                out.extend(["", render_image_html(src, alt, block=True, title=title, width=width), ""])
+            i = j
+            continue
+
+        out.append(_replace_inline_markdown_images(line))
+        i += 1
+
+    return "\n".join(_insert_markdown_list_boundaries(out)).strip()
+
+
 def md_to_html(md: str) -> str:
+    if not md.strip():
+        return ""
+
+    if _markdown is None:
+        return _legacy_md_to_html(md)
+
+    prepared = _preprocess_markdown_images_for_html(md)
+    rendered = _markdown.markdown(
+        prepared,
+        extensions=["extra", "sane_lists"],
+        tab_length=2,
+        output_format="html5",
+    ).strip()
+    return "".join(_group_narrow_images(_split_rendered_html_blocks(rendered))).strip()
+
+
+def _legacy_md_to_html(md: str) -> str:
     """Very small markdown→html converter (paragraphs + lists + links + images)."""
     lines = md.strip().splitlines()
     out: List[str] = []
@@ -63,12 +174,25 @@ def md_to_html(md: str) -> str:
             i += 1
             continue
         stripped = line.strip()
-        img = _parse_markdown_image_at(stripped, 0)
-        if img is not None and img[3] == len(stripped):
-            alt, src, title, _ = img
-            alt, width = _extract_width_from_alt(alt)
-            out.append(render_image_html(src, alt, block=True, title=title, width=width))
-            i += 1
+        image_run = _parse_standalone_image_line(stripped)
+        if image_run is not None:
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j]
+                if not next_line.strip() or FENCE_RE.match(next_line):
+                    break
+                next_images = _parse_standalone_image_line(next_line.strip())
+                if next_images is None:
+                    break
+                image_run.extend(next_images)
+                j += 1
+
+            if len(image_run) > 1:
+                out.append(render_image_row_html(image_run))
+            else:
+                alt, src, title, width = image_run[0]
+                out.append(render_image_html(src, alt, block=True, title=title, width=width))
+            i = j
             continue
         fence = FENCE_RE.match(line)
         if fence:
@@ -128,7 +252,7 @@ def md_to_html(md: str) -> str:
             i < len(lines)
             and lines[i].strip()
             and not HEADING_RE.match(lines[i].strip())
-            and not re.match(r"^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$", lines[i])
+            and _parse_standalone_image_line(lines[i]) is None
             and not re.match(r"^\s*>\s?", lines[i])
             and not re.match(r"^\s*[-*+]\s+", lines[i])
             and not re.match(r"^\s*\d+\.\s+", lines[i])
@@ -240,7 +364,51 @@ def _extract_width_from_alt(alt: str) -> Tuple[str, Optional[str]]:
     return alt[: m.start()].rstrip(), width
 
 
-def render_image_html(src: str, alt: str, block: bool = False, title: Optional[str] = None, width: Optional[str] = None) -> str:
+ImageSpec = Tuple[str, str, str, Optional[str]]
+
+
+def _parse_standalone_image_line(line: str) -> Optional[List[ImageSpec]]:
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    images: List[ImageSpec] = []
+    i = 0
+    while i < len(stripped):
+        while i < len(stripped) and stripped[i].isspace():
+            i += 1
+        if i >= len(stripped):
+            break
+
+        parsed = _parse_markdown_image_at(stripped, i)
+        if parsed is None:
+            return None
+
+        alt, src, title, end = parsed
+        alt, width = _extract_width_from_alt(alt)
+        images.append((alt, src, title, width))
+        i = end
+
+    return images or None
+
+
+def render_image_row_html(images: List[ImageSpec]) -> str:
+    default_width = f"{100 / len(images):.4g}%" if images else "100%"
+    figures = [
+        render_image_html(src, alt, block=True, title=title, width=width or default_width, row_item=True)
+        for alt, src, title, width in images
+    ]
+    return '<div class="md-image-row">' + "".join(figures) + "</div>"
+
+
+def render_image_html(
+    src: str,
+    alt: str,
+    block: bool = False,
+    title: Optional[str] = None,
+    width: Optional[str] = None,
+    row_item: bool = False,
+) -> str:
     safe_src = html.escape(src, quote=True)
     safe_alt = html.escape(alt.strip(), quote=True)
     safe_title = html.escape((title or alt).strip(), quote=True)
@@ -256,7 +424,13 @@ def render_image_html(src: str, alt: str, block: bool = False, title: Optional[s
     if not block:
         return img
 
-    figure_style = f"margin:1rem auto;width:{width} !important;max-width:100%;" if width else "margin:1rem 0;"
+    figure_class = "md-image-figure"
+    if row_item:
+        figure_class += " md-image-row__figure"
+        safe_width = html.escape(width or "100%", quote=True)
+        figure_style = f"--md-image-width:{safe_width};"
+    else:
+        figure_style = f"margin:1rem auto;width:{width} !important;max-width:100%;" if width else "margin:1rem 0;"
     caption = ""
     if safe_alt:
         caption = (
@@ -265,13 +439,84 @@ def render_image_html(src: str, alt: str, block: bool = False, title: Optional[s
             f"{safe_alt}"
             "</figcaption>"
         )
-    return f'<figure class="md-image-figure" style="{figure_style}">' + img + caption + "</figure>"
+    return f'<figure class="{figure_class}" style="{figure_style}">' + img + caption + "</figure>"
 
 
 _NARROW_FIGURE_RE = re.compile(
     r'<figure\b[^>]*\bstyle="[^"]*(?<!-)width:(\d+(?:\.\d+)?)(px|%|em|rem)'
 )
 _NARROW_THRESHOLDS: Dict[str, float] = {"%": 50, "px": 400, "em": 25, "rem": 25}
+_HTML_TAG_RE = re.compile(r"<\s*(/?)\s*([a-zA-Z][\w:-]*)\b([^>]*)>")
+_HTML_BLOCK_TAGS = {
+    "blockquote",
+    "div",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "ol",
+    "p",
+    "pre",
+    "table",
+    "ul",
+}
+_HTML_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
+def _split_rendered_html_blocks(rendered: str) -> List[str]:
+    if not rendered.strip():
+        return []
+
+    chunks: List[str] = []
+    depth = 0
+    chunk_start: Optional[int] = None
+    consumed_until = 0
+
+    for m in _HTML_TAG_RE.finditer(rendered):
+        tag = m.group(2).lower()
+        if tag not in _HTML_BLOCK_TAGS:
+            continue
+
+        is_end = bool(m.group(1))
+        is_self_closing = tag in _HTML_VOID_TAGS or m.group(3).strip().endswith("/")
+
+        if not is_end:
+            if depth == 0:
+                prefix = rendered[consumed_until : m.start()]
+                if prefix.strip():
+                    chunks.append(prefix.strip())
+                chunk_start = m.start()
+
+            if is_self_closing:
+                if depth == 0 and chunk_start is not None:
+                    chunks.append(rendered[chunk_start : m.end()].strip())
+                    chunk_start = None
+                    consumed_until = m.end()
+            else:
+                depth += 1
+            continue
+
+        if depth == 0:
+            continue
+
+        depth -= 1
+        if depth == 0 and chunk_start is not None:
+            chunks.append(rendered[chunk_start : m.end()].strip())
+            chunk_start = None
+            consumed_until = m.end()
+
+    if chunk_start is not None:
+        chunks.append(rendered[chunk_start:].strip())
+    else:
+        tail = rendered[consumed_until:]
+        if tail.strip():
+            chunks.append(tail.strip())
+
+    return [chunk for chunk in chunks if chunk]
 
 
 def _chunk_is_narrow_figure(chunk: str) -> bool:
@@ -279,7 +524,37 @@ def _chunk_is_narrow_figure(chunk: str) -> bool:
     if not m:
         return False
     value, unit = float(m.group(1)), m.group(2)
-    return value < _NARROW_THRESHOLDS.get(unit, 50)
+    return value <= _NARROW_THRESHOLDS.get(unit, 50)
+
+
+def _content_width_for_image(width_val: str) -> str:
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)%", width_val)
+    if not m:
+        return "50%"
+    return f"{max(0.0, 100.0 - float(m.group(1))):.4g}%"
+
+
+def _figure_as_row_item(figure: str, width_val: str) -> str:
+    if "md-image-row__figure" not in figure:
+        if re.search(r'<figure\b[^>]*\bclass="', figure):
+            figure = re.sub(
+                r'(<figure\b[^>]*\bclass=")([^"]*)"',
+                lambda m: f'{m.group(1)}{m.group(2)} md-image-row__figure"',
+                figure,
+                count=1,
+            )
+        else:
+            figure = re.sub(r"<figure\b", '<figure class="md-image-row__figure"', figure, count=1)
+
+    if re.search(r'<figure\b[^>]*\bstyle="', figure):
+        return re.sub(
+            r'(<figure\b[^>]*)\bstyle="[^"]*"',
+            lambda m: m.group(1) + f'style="--md-image-width:{width_val};"',
+            figure,
+            count=1,
+        )
+
+    return re.sub(r"(<figure\b[^>]*)>", lambda m: m.group(1) + f' style="--md-image-width:{width_val};">', figure, count=1)
 
 
 def _group_narrow_images(chunks: List[str]) -> List[str]:
@@ -291,26 +566,20 @@ def _group_narrow_images(chunks: List[str]) -> List[str]:
     m = _NARROW_FIGURE_RE.search(orig_figure)
     width_val = f"{m.group(1)}{m.group(2)}" if m else "40%"
 
-    # Use flex-basis instead of width so CSS `width:100%!important` on .md-image-figure
-    # doesn't override the layout (flex-basis takes precedence over width in flex context).
-    figure = re.sub(
-        r'(<figure\b[^>]*)\bstyle="[^"]*"',
-        lambda mo: mo.group(1) + f'style="flex:0 0 {width_val};max-width:{width_val};min-width:0;margin:0;"',
-        orig_figure,
-    )
+    figure = _figure_as_row_item(orig_figure, width_val)
+    content_width = _content_width_for_image(width_val)
 
     before = chunks[:narrow_idx]
     after = chunks[narrow_idx + 1:]
 
-    row_style = "display:flex;align-items:flex-start;gap:1.5rem;margin:1rem 0;"
-    content_style = "flex:1;min-width:0;"
+    row_style = f"--md-image-width:{width_val};--md-image-content-width:{content_width};"
 
     if before:
         # text before image → image on right, text on left
         before_html = "".join(before)
         row = (
-            f'<div class="md-image-row" style="{row_style}">'
-            f'<div style="{content_style}">{before_html}</div>'
+            f'<div class="md-image-row md-image-text-row" style="{row_style}">'
+            f'<div class="md-image-row__content">{before_html}</div>'
             f"{figure}</div>"
         )
         return [row] + list(after)
@@ -318,9 +587,9 @@ def _group_narrow_images(chunks: List[str]) -> List[str]:
         # image before text → image on left, text on right
         after_html = "".join(after)
         row = (
-            f'<div class="md-image-row" style="{row_style}">'
+            f'<div class="md-image-row md-image-text-row" style="{row_style}">'
             f"{figure}"
-            f'<div style="{content_style}">{after_html}</div></div>'
+            f'<div class="md-image-row__content">{after_html}</div></div>'
         )
         return [row]
     else:
@@ -328,11 +597,33 @@ def _group_narrow_images(chunks: List[str]) -> List[str]:
 
 
 def extract_first_image(md: str) -> Tuple[str, Optional[Tuple[str, str]]]:
-    match = IMAGE_RE.search(md)
-    if not match:
-        return md, None
-    updated_md = md[: match.start()] + md[match.end() :]
-    return updated_md, (match.group(1).strip(), match.group(2).strip())
+    offset = 0
+    in_fence = False
+    fence_marker = ""
+    for line in md.splitlines(keepends=True):
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            offset += len(line)
+            continue
+
+        if not in_fence:
+            match = IMAGE_RE.search(line)
+            if match:
+                start = offset + match.start()
+                end = offset + match.end()
+                updated_md = md[:start] + md[end:]
+                return updated_md, (match.group(1).strip(), match.group(2).strip())
+
+        offset += len(line)
+
+    return md, None
 
 
 def build_hero_markdown(
@@ -385,7 +676,21 @@ class Section:
 def parse_headings(md: str) -> List[Section]:
     lines = md.splitlines()
     sections: List[Section] = []
+    in_fence = False
+    fence_marker = ""
     for idx, line in enumerate(lines):
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            continue
+        if in_fence:
+            continue
         m = HEADING_RE.match(line)
         if m:
             sections.append(Section(level=len(m.group(1)), title=m.group(2).strip(), start=idx))
@@ -808,12 +1113,48 @@ def _normalize_component_metadata_key(key: str) -> Optional[str]:
     return COMPONENT_METADATA_KEY_MAP.get(key.lower())
 
 
+def _iter_non_fenced_lines(md: str) -> Iterable[str]:
+    in_fence = False
+    fence_marker = ""
+    for line in md.splitlines():
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            continue
+        if not in_fence:
+            yield line
+
+
 def extract_component_metadata(md: str) -> Tuple[str, Dict[str, Any]]:
     metadata: Dict[str, Any] = {}
     kept_lines: List[str] = []
     multiline_key: Optional[str] = None
+    in_fence = False
+    fence_marker = ""
 
     for line in md.splitlines():
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            kept_lines.append(line)
+            continue
+
+        if in_fence:
+            kept_lines.append(line)
+            continue
+
         candidate = line.strip()
         if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in ('"', "'"):
             candidate = candidate[1:-1].strip()
@@ -865,7 +1206,27 @@ def parse_mcq_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple
     if instruction_value not in (None, ""):
         instruction_lines.append(str(instruction_value).strip())
 
+    in_fence = False
+    fence_marker = ""
     for ln in lines:
+        fence = FENCE_RE.match(ln)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            if not saw_option:
+                body_lines.append(ln)
+            continue
+
+        if in_fence:
+            if not saw_option:
+                body_lines.append(ln)
+            continue
+
         stripped = ln.strip()
 
         matched = False
@@ -947,7 +1308,27 @@ def parse_matching_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> 
     if instruction_value not in (None, ""):
         instruction_lines.append(str(instruction_value).strip())
 
+    in_fence = False
+    fence_marker = ""
     for ln in lines:
+        fence = FENCE_RE.match(ln)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            if not saw_question:
+                instruction_lines.append(ln)
+            continue
+
+        if in_fence:
+            if not saw_question:
+                instruction_lines.append(ln)
+            continue
+
         stripped = ln.strip()
         m_q = re.match(r"^-\s+(.+)$", ln)
         if m_q:
@@ -985,7 +1366,7 @@ def _looks_like_reflection(md: str) -> bool:
     explicit_type = str(metadata.get("type", "")).strip().lower()
     if explicit_type == "reflection":
         return True
-    return metadata.get("placeholder") is not None or any(PLACEHOLDER_RE.match(ln) for ln in md.strip().splitlines())
+    return metadata.get("placeholder") is not None or any(PLACEHOLDER_RE.match(ln) for ln in _iter_non_fenced_lines(md))
 
 
 def parse_reflection_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str, Optional[str]]:
@@ -1019,7 +1400,7 @@ def _looks_like_mcq(md: str) -> bool:
         return True
     if _looks_like_matching(md) or _looks_like_reflection(md):
         return False
-    return any(rx.match(ln) for ln in md.strip().splitlines() for rx in MCQ_OPT_RES)
+    return any(rx.match(ln) for ln in _iter_non_fenced_lines(md) for rx in MCQ_OPT_RES)
 
 
 def _looks_like_slider(md: str) -> bool:
@@ -1029,7 +1410,7 @@ def _looks_like_slider(md: str) -> bool:
         return True
     if metadata.get("scale") is not None:
         return True
-    return any(SL_SCALE_RE.match(ln) or SL_LABEL_RE.match(ln) for ln in md.strip().splitlines())
+    return any(SL_SCALE_RE.match(ln) or SL_LABEL_RE.match(ln) for ln in _iter_non_fenced_lines(md))
 
 
 _ACCORDION_ITEM_RE = re.compile(r"^\*\*(.+)\*\*\s*$")
@@ -1052,8 +1433,32 @@ def parse_accordion_chunk(md: str, metadata: Optional[Dict[str, Any]] = None) ->
     current_title: Optional[str] = None
     body_lines: List[str] = []
     preamble_lines: List[str] = []
+    in_fence = False
+    fence_marker = ""
 
     for ln in md.strip().splitlines():
+        fence = FENCE_RE.match(ln)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            if current_title is not None:
+                body_lines.append(ln)
+            else:
+                preamble_lines.append(ln)
+            continue
+
+        if in_fence:
+            if current_title is not None:
+                body_lines.append(ln)
+            else:
+                preamble_lines.append(ln)
+            continue
+
         m = _ACCORDION_ITEM_RE.match(ln.strip())
         if m:
             if current_title is not None:

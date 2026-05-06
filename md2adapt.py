@@ -1502,16 +1502,24 @@ def accordion_component(
 def _looks_like_component(md: str) -> bool:
     md, metadata = extract_component_metadata(md)
     explicit_type = str(metadata.get("type", "")).strip().lower()
-    if explicit_type in {"mcq", "slider", "matching", "reflection", "accordion"}:
+    if explicit_type in {"text", "mcq", "slider", "matching", "reflection", "accordion"}:
         return True
     return _looks_like_mcq(md) or _looks_like_slider(md) or _looks_like_matching(md) or _looks_like_reflection(md) or _looks_like_accordion(md)
 
 
 def _dispatch_component(comp_id: str, block_id: str, title: str, chunk: str) -> Dict[str, Any]:
     """Return the right component object based on chunk content."""
+    def _make_text_component():
+        component = text_component(comp_id, block_id, title, chunk)
+        component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
+        return component
+
     chunk, component_metadata = extract_component_metadata(chunk)
     explicit_type = str(component_metadata.get("type", "")).strip().lower()
-    if explicit_type == "mcq" or _looks_like_mcq(chunk):
+    
+    if explicit_type == "text":
+        return _make_text_component()
+    elif explicit_type == "mcq" or _looks_like_mcq(chunk):
         body_html, instr_html, items, feedback = parse_mcq_chunk(chunk, component_metadata)
         if items:
             component = mcq_component(comp_id, block_id, title, body_html, instr_html, items, feedback)
@@ -1539,9 +1547,8 @@ def _dispatch_component(comp_id: str, block_id: str, title: str, chunk: str) -> 
             component = accordion_component(comp_id, block_id, title, preamble, acc_items)
             component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
             return component
-    component = text_component(comp_id, block_id, title, chunk)
-    component.update({k: v for k, v in component_metadata.items() if k.startswith("_")})
-    return component
+    
+    return _make_text_component()
 
 
 # -------- Tiny front-matter (optional) --------
@@ -2359,20 +2366,30 @@ def build_from_markdown(md: str, lang: str, menu_title: str) -> Tuple[List[Dict[
             article_body = "" if has_block_h2 else article_text_body
             articles.append(article_template(article_id, page_id, a_sec.title, body=article_body))
 
-            if not hero_emitted:
+            if has_block_h2 and not hero_emitted:
                 hero_markdown = build_hero_markdown(
                     p_sec.title,
                     hero_image,
-                    article_text_body if has_block_h2 else "",
+                    article_text_body,
                 )
                 if hero_markdown:
                     hero_block_id = ids.new()
-                    blocks.append(block_template(hero_block_id, article_id, tracking, "", body=""))
+
+                    hero_block = block_template(hero_block_id, article_id, tracking, p_sec.title, body="")
+                    hero_block["_classes"] = "md-hero-block"
+                    hero_block["_pageLevelProgress"] = {
+                        "_isEnabled": True,
+                        "_isCompletionIndicatorEnabled": True,
+                    }
+
+                    blocks.append(hero_block)
                     tracking += 1
+
                     hero_comp_id = ids.new()
                     hero_component = text_component(hero_comp_id, hero_block_id, "", hero_markdown)
                     hero_component["_classes"] = "md-hero-component"
                     components.append(hero_component)
+
                     hero_emitted = True
 
             if has_block_h2:
